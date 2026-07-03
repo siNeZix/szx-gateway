@@ -73,7 +73,38 @@ func (h *AihubmixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
+		h.handleModels(w, r)
+		return
+	}
+
 	h.proxyWithRetry(w, r)
+}
+
+func (h *AihubmixHandler) handleModels(w http.ResponseWriter, r *http.Request) {
+	type ModelItem struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		OwnedBy string `json:"owned_by"`
+	}
+
+	free := h.rankingMgr.GetAihubmixFreeModels()
+	data := make([]ModelItem, 0, len(free))
+	for _, m := range free {
+		data = append(data, ModelItem{
+			ID:      m.ID,
+			Object:  "model",
+			Created: m.UpdatedAt.Unix(),
+			OwnedBy: "aihubmix",
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "list",
+		"data":   data,
+	})
 }
 
 func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request) {
@@ -84,17 +115,22 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 	}
 	r.Body.Close()
 
-	// На /chat/completions проверяем, что запрошенная модель — free из кэша AIHubMix.
-	if strings.Contains(r.URL.Path, "/chat/completions") && strings.Contains(r.Header.Get("Content-Type"), "json") {
+	// На /chat/completions всегда парсим model и валидируем против free-кэша.
+	// Без жёсткой проверки некорректный/пустой Content-Type обходил фильтр.
+	modelForLimits := ""
+	if strings.Contains(r.URL.Path, "/chat/completions") {
 		var peek struct {
 			Model string `json:"model"`
 		}
-		if err := json.Unmarshal(bodyBytes, &peek); err == nil && peek.Model != "" {
-			if !h.rankingMgr.IsAihubmixFreeModel(peek.Model) {
-				http.Error(w, fmt.Sprintf(`{"error":{"message":"Model %s is not supported (only AIHubMix free models allowed)"}}`, peek.Model), http.StatusBadRequest)
-				return
-			}
+		if err := json.Unmarshal(bodyBytes, &peek); err != nil {
+			http.Error(w, `{"error":{"message":"Invalid JSON body"}}`, http.StatusBadRequest)
+			return
 		}
+		if peek.Model == "" || !h.rankingMgr.IsAihubmixFreeModel(peek.Model) {
+			http.Error(w, fmt.Sprintf(`{"error":{"message":"Model %s is not supported (only AIHubMix free models allowed)"}}`, peek.Model), http.StatusBadRequest)
+			return
+		}
+		modelForLimits = peek.Model
 	}
 
 	// reasoning-fix: на /chat/completions при наличии tools вырезаем reasoning-параметры,
@@ -119,7 +155,13 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 
 	var finalErr error
 	for attempt := 1; attempt <= h.cfg.MaxKeyRetries; attempt++ {
-		keyState, err := h.pool.GetBestKey()
+		var keyState *keys.KeyState
+		var err error
+		if modelForLimits != "" {
+			keyState, err = h.pool.GetBestKeyForModel(modelForLimits)
+		} else {
+			keyState, err = h.pool.GetBestKey()
+		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":{"message":"%v"}}`, err), http.StatusServiceUnavailable)
 			return
@@ -156,12 +198,22 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		// в relay передаём firstBytes отдельно + bufReader с остатком body.
 		bufReader := bufio.NewReader(resp.Body)
 		firstBytes, _ := io.ReadAll(io.LimitReader(bufReader, 8192))
+		// TTFT: время до получения первого чанка от upstream.
+		// Для не-стрим ответов это близко к полной латенси; для стримов — честный TTFT.
+		ttftMs := time.Since(startTime).Milliseconds()
+		isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 
 		// 1) free-квота исчерпана: HTTP 200 с заглушкой "...prevent abuse... can only try..."
 		if resp.StatusCode == 200 && containsAny(firstBytes, aihubmixQuotaMarkers) {
 			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s free-quota exhausted (10/acc)", keyState.MaskedKey)
-			keyState.SetStatus("day_exhausted")
+			log.Printf("[AIHubMix] key %s free-quota exhausted for model %s", keyState.MaskedKey, modelForLimits)
+			if modelForLimits != "" {
+				if err := h.store.MarkModelExhausted("aihubmix", keyState.KeyHash, modelForLimits, time.Now()); err != nil {
+					log.Printf("[AIHubMix] failed to mark model exhausted: %v", err)
+				}
+			} else {
+				keyState.SetStatus("day_exhausted")
+			}
 			h.pool.SyncKeyToDB(keyState)
 			continue
 		}
@@ -169,7 +221,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		// 2) ошибка уровня модели/провайдера/биллинга — не вина ключа, отдаём клиенту
 		if resp.StatusCode >= 400 && containsAnyLower(firstBytes, aihubmixRelayMarkers) {
 			log.Printf("[AIHubMix] key %s → %d model/provider error (key NOT banned)", keyState.MaskedKey, resp.StatusCode)
-			h.relayResponse(w, resp, firstBytes, bufReader, keyState, r.URL.Path, startTime, false)
+			h.relayResponse(w, resp, firstBytes, bufReader, keyState, r.URL.Path, startTime, ttftMs, isStream, true)
 			return
 		}
 
@@ -186,7 +238,11 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		if resp.StatusCode == 402 || resp.StatusCode == 429 {
 			resp.Body.Close()
 			log.Printf("[AIHubMix] key %s limited (status %d)", keyState.MaskedKey, resp.StatusCode)
-			keyState.SetCooldown(60*time.Second, "rate_limited")
+			if modelForLimits != "" {
+				keyState.SetModelCooldown(modelForLimits, time.Now().Add(60*time.Second))
+			} else {
+				keyState.SetCooldown(60*time.Second, "rate_limited")
+			}
 			h.pool.SyncKeyToDB(keyState)
 			continue
 		}
@@ -201,8 +257,11 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		}
 
 		// 6) успех или прочий статус — релеим как есть
-		isSuccess := resp.StatusCode == 200
-		h.relayResponse(w, resp, firstBytes, bufReader, keyState, r.URL.Path, startTime, isSuccess)
+		logModel := modelForLimits
+		if logModel == "" {
+			logModel = r.URL.Path
+		}
+		h.relayResponse(w, resp, firstBytes, bufReader, keyState, logModel, startTime, ttftMs, isStream, true)
 		return
 	}
 
@@ -210,12 +269,13 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"AIHubMix gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
 }
 
-func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, path string, startTime time.Time, recordSuccess bool) {
+func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, model string, startTime time.Time, ttftMs int64, isStream, recordRequest bool) {
 	defer resp.Body.Close()
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, _ := w.(http.Flusher)
+	tokens := usageTokens(firstBytes)
 	if len(firstBytes) > 0 {
 		w.Write(firstBytes)
 		if flusher != nil {
@@ -225,6 +285,9 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			if n := usageTokens(line); n > 0 {
+				tokens = n
+			}
 			w.Write(line)
 			if flusher != nil {
 				flusher.Flush()
@@ -235,21 +298,61 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 		}
 	}
 
-	if recordSuccess {
-		latencyMs := time.Since(startTime).Milliseconds()
-		err := h.store.LogRequest(&store.DBRequest{
-			Timestamp:  time.Now(),
-			KeyHash:    ks.KeyHash,
-			Model:      path,
-			StatusCode: resp.StatusCode,
-			LatencyMs:  latencyMs,
-			TTFTMs:     latencyMs,
-			Provider:   "aihubmix",
-		})
-		if err != nil {
-			log.Printf("[AIHubMix] failed to log request: %v", err)
+	if !recordRequest {
+		return
+	}
+
+	latencyMs := time.Since(startTime).Milliseconds()
+	isSuccess := resp.StatusCode == 200
+
+	// Агрегируем в model_usage: запросы/токены/латенси/ошибки.
+	// Запрос всегда учитывается; токены — только на успехе (при ошибке их нет).
+	var errCount int
+	if !isSuccess {
+		errCount = 1
+	}
+	tokForAgg := tokens
+	if !isSuccess {
+		tokForAgg = 0
+	}
+	if strings.HasSuffix(model, "-free") {
+		if err := h.store.AddModelUsage("aihubmix", ks.KeyHash, model, time.Now(), 1, tokForAgg, latencyMs, errCount); err != nil {
+			log.Printf("[AIHubMix] failed to log model usage: %v", err)
 		}
 	}
+
+	if err := h.store.LogRequest(&store.DBRequest{
+		Timestamp:  time.Now(),
+		KeyHash:    ks.KeyHash,
+		Model:      model,
+		StatusCode: resp.StatusCode,
+		LatencyMs:  latencyMs,
+		TTFTMs:     ttftMs,
+		IsStream:   isStream,
+		Provider:   "aihubmix",
+	}); err != nil {
+		log.Printf("[AIHubMix] failed to log request: %v", err)
+	}
+}
+
+func usageTokens(data []byte) int64 {
+	s := strings.TrimSpace(string(data))
+	if strings.HasPrefix(s, "data:") {
+		s = strings.TrimSpace(strings.TrimPrefix(s, "data:"))
+	}
+	if s == "" || s == "[DONE]" {
+		return 0
+	}
+	var v struct {
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return 0
+	}
+	return v.Usage.PromptTokens + v.Usage.CompletionTokens
 }
 
 func sanitizeReasoning(body []byte, path, contentType string) []byte {

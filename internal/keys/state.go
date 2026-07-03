@@ -26,25 +26,29 @@ type KeyState struct {
 	LastUsedAt        time.Time
 
 	// Sliding window rate limit tracking (1 minute)
-	RequestTimes []time.Time
+	RequestTimes       []time.Time
+	ModelRequestTimes  map[string][]time.Time
+	ModelCooldownUntil map[string]time.Time
 }
 
 func NewKeyState(rawKey string, dbKey *store.DBKey) *KeyState {
 	return &KeyState{
-		RawKey:            rawKey,
-		KeyHash:           dbKey.KeyHash,
-		MaskedKey:         dbKey.MaskedKey,
-		Status:            dbKey.Status,
-		LimitRemaining:    dbKey.LimitRemaining,
-		UsageToday:        dbKey.UsageToday,
-		MaxLimit:          dbKey.MaxLimit,
-		IsFreeTier:        dbKey.IsFreeTier,
-		RateLimitReq:      dbKey.RateLimitReq,
-		RateLimitInterval: dbKey.RateLimitInterval,
-		CooldownUntil:     dbKey.CooldownUntil,
-		LastCheckedAt:     dbKey.LastCheckedAt,
-		LastUsedAt:        dbKey.LastUsedAt,
-		RequestTimes:      make([]time.Time, 0),
+		RawKey:             rawKey,
+		KeyHash:            dbKey.KeyHash,
+		MaskedKey:          dbKey.MaskedKey,
+		Status:             dbKey.Status,
+		LimitRemaining:     dbKey.LimitRemaining,
+		UsageToday:         dbKey.UsageToday,
+		MaxLimit:           dbKey.MaxLimit,
+		IsFreeTier:         dbKey.IsFreeTier,
+		RateLimitReq:       dbKey.RateLimitReq,
+		RateLimitInterval:  dbKey.RateLimitInterval,
+		CooldownUntil:      dbKey.CooldownUntil,
+		LastCheckedAt:      dbKey.LastCheckedAt,
+		LastUsedAt:         dbKey.LastUsedAt,
+		RequestTimes:       make([]time.Time, 0),
+		ModelRequestTimes:  make(map[string][]time.Time),
+		ModelCooldownUntil: make(map[string]time.Time),
 	}
 }
 
@@ -97,6 +101,13 @@ func (ks *KeyState) cleanOldRequests(now time.Time) {
 	})
 }
 
+func cleanTimes(times []time.Time, now time.Time) []time.Time {
+	threshold := now.Add(-time.Minute)
+	return slices.DeleteFunc(times, func(t time.Time) bool {
+		return !t.After(threshold)
+	})
+}
+
 // usable reports whether the key may serve a request now. Caller holds ks.mu.
 func (ks *KeyState) usable(now time.Time) bool {
 	ks.ResetDailyUsageIfNewDay()
@@ -133,6 +144,20 @@ func (ks *KeyState) CanUse(now time.Time) bool {
 	return ks.usable(now)
 }
 
+func (ks *KeyState) CanUseBasic(now time.Time) bool {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.ResetDailyUsageIfNewDay()
+	return ks.Status != "invalid" && ks.Status != "day_exhausted" && ks.Status != "disabled" && !ks.CooldownUntil.After(now)
+}
+
+func (ks *KeyState) CanUseModel(now time.Time, model string) bool {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.ResetDailyUsageIfNewDay()
+	return ks.Status != "invalid" && ks.Status != "day_exhausted" && ks.Status != "disabled" && !ks.CooldownUntil.After(now) && !ks.ModelCooldownUntil[model].After(now)
+}
+
 // TryReserve atomically checks usability and, if usable, registers the request.
 // Returns false without mutating if the key cannot be used. This closes the
 // select-then-use race between GetBestKey and RegisterRequest.
@@ -145,6 +170,40 @@ func (ks *KeyState) TryReserve(now time.Time) bool {
 	}
 	ks.registerLocked(now)
 	return true
+}
+
+func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	ks.ResetDailyUsageIfNewDay()
+	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" || ks.CooldownUntil.After(now) {
+		return false
+	}
+	if ks.ModelCooldownUntil[model].After(now) {
+		return false
+	}
+	if rpm <= 0 {
+		rpm = 5
+	}
+	times := cleanTimes(ks.ModelRequestTimes[model], now)
+	if len(times) >= rpm {
+		ks.ModelRequestTimes[model] = times
+		return false
+	}
+	ks.ModelRequestTimes[model] = append(times, now)
+	ks.UsageToday++
+	ks.LastUsedAt = now
+	if ks.Status == "unchecked" || ks.Status == "rate_limited" {
+		ks.Status = "active"
+	}
+	return true
+}
+
+func (ks *KeyState) SetModelCooldown(model string, until time.Time) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.ModelCooldownUntil[model] = until
 }
 
 // RegisterRequest increments usage and records request timestamp for rate limiting.

@@ -11,6 +11,7 @@ import (
 
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
+	"openrouter-gateway/internal/limits"
 	"openrouter-gateway/internal/models"
 	"openrouter-gateway/internal/store"
 )
@@ -25,13 +26,24 @@ type WebServer struct {
 type DashboardData struct {
 	GeneralStats *store.GeneralStats
 	ModelStats   []store.ModelStats
+	LimitStats   []LimitStat
 	KeyStats     []store.KeyUsageStats
 	TopModels    []store.DBModel
 	FreeModels   []store.DBModel
+	UsageTrend   []store.ModelUsageTrend
 	UpdateTime   string
 	RefreshedAt  string
 	Token        string
 	Provider     string
+}
+
+type LimitStat struct {
+	Model       string
+	RPM         int
+	RequestsDay int64
+	TokensDay   int64
+	Requests    int64
+	Tokens      int64
 }
 
 func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool) *WebServer {
@@ -108,6 +120,31 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitStats := []LimitStat{}
+	if provider == "aihubmix" {
+		usageByModel := map[string]store.ModelUsageStats{}
+		if usage, err := ws.store.GetModelUsageStats(provider, time.Now()); err == nil {
+			for _, u := range usage {
+				usageByModel[u.Model] = u
+			}
+		}
+		for _, m := range ws.rankingMgr.GetAihubmixFreeModels() {
+			l, _ := limits.AIHubMixFree(m.ID)
+			u := usageByModel[m.ID]
+			limitStats = append(limitStats, LimitStat{Model: m.ID, RPM: l.RPM, RequestsDay: l.RequestsDay, TokensDay: l.TokensDay, Requests: u.Requests, Tokens: u.Tokens})
+		}
+	}
+
+	// Тренд за 14 дней (только для aihubmix, т.к. model_usage пишется им).
+	var usageTrend []store.ModelUsageTrend
+	if provider == "aihubmix" {
+		if trend, err := ws.store.GetModelUsageTrend(provider, 14); err == nil {
+			usageTrend = trend
+		} else {
+			log.Printf("Failed to get usage trend: %v", err)
+		}
+	}
+
 	topModels := []store.DBModel{}
 	freeModels := []store.DBModel{}
 	if provider == "openrouter" {
@@ -120,9 +157,11 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := DashboardData{
 		GeneralStats: general,
 		ModelStats:   modelsStats,
+		LimitStats:   limitStats,
 		KeyStats:     keyStats,
 		TopModels:    topModels,
 		FreeModels:   freeModels,
+		UsageTrend:   usageTrend,
 		RefreshedAt:  time.Now().Format("15:04:05 (02.01.2006)"),
 		Token:        ws.cfg.GatewayToken,
 		Provider:     provider,
@@ -212,6 +251,29 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		topModels = ws.rankingMgr.GetTopModels()
 	}
 
+	limitStats := []LimitStat{}
+	if provider == "aihubmix" {
+		usageByModel := map[string]store.ModelUsageStats{}
+		if usage, err := ws.store.GetModelUsageStats(provider, time.Now()); err == nil {
+			for _, u := range usage {
+				usageByModel[u.Model] = u
+			}
+		}
+		for _, m := range ws.rankingMgr.GetAihubmixFreeModels() {
+			l, _ := limits.AIHubMixFree(m.ID)
+			u := usageByModel[m.ID]
+			limitStats = append(limitStats, LimitStat{Model: m.ID, RPM: l.RPM, RequestsDay: l.RequestsDay, TokensDay: l.TokensDay, Requests: u.Requests, Tokens: u.Tokens})
+		}
+	}
+
+	// Тренд за 14 дней (только для aihubmix).
+	var usageTrend []store.ModelUsageTrend
+	if provider == "aihubmix" {
+		if trend, err := ws.store.GetModelUsageTrend(provider, 14); err == nil {
+			usageTrend = trend
+		}
+	}
+
 	// Format cooldown durations for JSON response
 	type CustomKeyStats struct {
 		MaskedKey     string `json:"masked_key"`
@@ -288,8 +350,10 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	res := map[string]interface{}{
 		"general":      customGeneral,
 		"models":       customModels,
+		"limits":       limitStats,
 		"keys":         customKeys,
 		"top_models":   topModels,
+		"usage_trend":  usageTrend,
 		"refreshed_at": time.Now().Format("15:04:05 (02.01.2006)"),
 	}
 
@@ -602,6 +666,14 @@ const dashboardTemplate = `
                     }
                 }
 
+                const limitsBody = document.getElementById('aihubmix-limits-body');
+                if (limitsBody && data.limits) {
+                    limitsBody.innerHTML = data.limits.map(renderLimitRow).join('');
+                }
+
+                // Тренд за 14 дней
+                renderTrend(data.usage_trend);
+
                 // Update in-memory keys
                 allKeysData = data.keys || [];
                 // Re-render table keeping current page, unless reset explicitly requested
@@ -610,6 +682,83 @@ const dashboardTemplate = `
             } catch (err) {
                 console.error('Failed to auto update stats:', err);
             }
+        }
+
+        function renderLimitRow(l) {
+            const reqLimit = Number(l.RequestsDay || l.requests_day || 0);
+            const tokLimit = Number(l.TokensDay || l.tokens_day || 0);
+            const req = Number(l.Requests || l.requests || 0);
+            const tok = Number(l.Tokens || l.tokens || 0);
+            const rpm = Number(l.RPM || l.rpm || 0);
+            const reqText = reqLimit > 0 ? (req + ' / ' + reqLimit) : (req + ' / ?');
+            const tokText = tokLimit > 0 ? (tok + ' / ' + tokLimit) : (tok + ' / ?');
+            const reqPct = reqLimit > 0 ? Math.min(100, req / reqLimit * 100) : 0;
+            return '' +
+                '<tr class="hover:bg-slate-750/50 transition">' +
+                    '<td class="px-4 py-2.5 font-mono text-xs text-slate-200">' + (l.Model || l.model) + '</td>' +
+                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + rpm + '</td>' +
+                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + reqText + '</td>' +
+                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + tokText + '</td>' +
+                    '<td class="px-4 py-2.5 min-w-32"><div class="h-1.5 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-indigo-400" style="width:' + reqPct + '%"></div></div></td>' +
+                '</tr>';
+        }
+
+        // Спарклайн: SVG-полилиния ввиде бар-чарта, без зависимостей.
+        function sparkline(values, color) {
+            if (!values || values.length === 0) return '<span class="text-slate-600 text-xs">нет данных</span>';
+            const w = 100, h = 28, barW = w / values.length;
+            const max = Math.max.apply(null, values);
+            const bars = values.map((v, i) => {
+                const bh = max > 0 ? (v / max) * (h - 2) : 0;
+                const x = i * barW + 0.5;
+                const y = h - bh;
+                return '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (barW - 1).toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="' + color + '" rx="0.5"/>';
+            }).join('');
+            return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" class="overflow-visible">' + bars + '</svg>';
+        }
+
+        function renderTrend(trend) {
+            const c = document.getElementById('usage-trend-container');
+            if (!c) return;
+            if (!trend || trend.length === 0) {
+                c.innerHTML = '<p class="text-sm text-slate-400 py-4 col-span-2 text-center">Тренд появится после первых запросов.</p>';
+                return;
+            }
+            const days = trend.map(t => t.day ? t.day.slice(5) : ''); // MM-DD
+            const reqs = trend.map(t => Number(t.requests || 0));
+            const toks = trend.map(t => Number(t.tokens || 0));
+            const lats = trend.map(t => Number(t.latency_avg_ms || 0));
+            const errs = trend.map(t => Number(t.errors || 0));
+
+            const totalReq = reqs.reduce((a, b) => a + b, 0);
+            const totalTok = toks.reduce((a, b) => a + b, 0);
+            const totalErr = errs.reduce((a, b) => a + b, 0);
+            const errPct = totalReq > 0 ? (totalErr / totalReq * 100).toFixed(1) : '0.0';
+            const avgLat = totalReq > 0 ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
+            const lastDay = days[days.length - 1] || '—';
+            const lastReq = reqs[reqs.length - 1] || 0;
+
+            const card = (label, value, sub, svg, accent) => {
+                return '<div class="bg-slate-900 border border-slate-700 rounded-lg p-4 flex flex-col gap-2">' +
+                    '<div class="flex items-center justify-between">' +
+                        '<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">' + label + '</span>' +
+                        '<span class="text-[10px] text-slate-500 font-mono">' + lastDay + '</span>' +
+                    '</div>' +
+                    '<div class="text-2xl font-bold ' + accent + '">' + value + '</div>' +
+                    '<div class="text-xs text-slate-500">' + sub + '</div>' +
+                    '<div class="mt-1 flex justify-center">' + svg + '</div>' +
+                    '<div class="flex justify-between text-[9px] font-mono text-slate-600 mt-0.5">' +
+                        '<span>' + (days[0] || '') + '</span>' +
+                        '<span>' + (days[days.length-1] || '') + '</span>' +
+                    '</div>' +
+                '</div>';
+            };
+
+            c.innerHTML =
+                card('Запросы', totalReq.toLocaleString('ru-RU'), 'сегодня: ' + lastReq, sparkline(reqs, '#818cf8'), 'text-white') +
+                card('Токены', totalTok.toLocaleString('ru-RU'), 'за 14 дней', sparkline(toks, '#34d399'), 'text-emerald-400') +
+                card('Ср. задержка', avgLat + ' ms', 'среднее за период', sparkline(lats, '#fbbf24'), 'text-amber-400') +
+                card('Ошибки', totalErr + ' (' + errPct + '%)', 'из ' + totalReq + ' запросов', sparkline(errs, '#f43f5e'), 'text-rose-400');
         }
 
         function renderKeysTable(resetPage = false) {
@@ -722,7 +871,7 @@ const dashboardTemplate = `
                         statusBadge = '<span class="inline-flex items-center px-2 py-1 rounded-md font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">UNCHECKED</span>';
                     }
 
-                    const limitText = k.limit <= 0 ? '<span class="text-slate-500">unknown</span>' : 
+                    const limitText = k.limit <= 0 ? '<span class="text-slate-500">?</span>' : 
                         ('<span class="' + (k.limit <= 10 ? 'text-rose-400 font-semibold' : 'text-slate-300') + '">' + k.limit + '</span>');
 
                     const errPercent = k.total_requests > 0 ? (k.error_requests / k.total_requests * 100) : 0;
@@ -1182,6 +1331,56 @@ const dashboardTemplate = `
                 </div>
             </section>
         </div>
+        {{end}}
+
+        {{if eq .Provider "aihubmix"}}
+        <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
+            <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
+                <h2 class="font-bold text-white flex items-center gap-2">
+                    <span>⏱️</span> Лимиты AIHubMix free-моделей
+                </h2>
+                <span class="text-xs text-slate-400">UTC сутки, счётчик: ключ + модель</span>
+            </div>
+            <div class="overflow-x-auto max-h-[360px] overflow-y-auto">
+                <table class="w-full text-sm text-left border-collapse">
+                    <thead class="bg-slate-900 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700 sticky top-0 z-10">
+                        <tr>
+                            <th class="px-4 py-2.5">Модель</th>
+                            <th class="px-4 py-2.5 text-center">RPM</th>
+                            <th class="px-4 py-2.5 text-center">Requests/day</th>
+                            <th class="px-4 py-2.5 text-center">Tokens/day</th>
+                            <th class="px-4 py-2.5">Запросы</th>
+                        </tr>
+                    </thead>
+                    <tbody id="aihubmix-limits-body" class="divide-y divide-slate-700">
+                        {{range .LimitStats}}
+                        <tr class="hover:bg-slate-750/50 transition">
+                            <td class="px-4 py-2.5 font-mono text-xs text-slate-200">{{.Model}}</td>
+                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.RPM}}</td>
+                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.Requests}} / {{if gt .RequestsDay 0}}{{.RequestsDay}}{{else}}?{{end}}</td>
+                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.Tokens}} / {{if gt .TokensDay 0}}{{.TokensDay}}{{else}}?{{end}}</td>
+                            <td class="px-4 py-2.5 min-w-32"><div class="h-1.5 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-indigo-400" style="width: {{percentage .Requests .RequestsDay}}%"></div></div></td>
+                        </tr>
+                        {{else}}
+                        <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">Лимиты появятся после загрузки списка моделей.</td></tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Usage Trend: 14 дней, запросы / токены / латенси / ошибки -->
+        <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
+            <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
+                <h2 class="font-bold text-white flex items-center gap-2">
+                    <span>📈</span> Тренд за 14 дней (UTC)
+                </h2>
+                <span class="text-xs text-slate-400">модель × ключ × день, агрегат по провайдеру</span>
+            </div>
+            <div id="usage-trend-container" class="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <!-- Спарклайны рендерятся JS-ом из /api/stats -->
+            </div>
+        </section>
         {{end}}
 
         <!-- NEW SECTION: Detailed List of ALL Free Models (Collapsible Accordion) -->

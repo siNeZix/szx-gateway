@@ -73,6 +73,31 @@ type DBModel struct {
 	UpdatedAt     time.Time
 }
 
+type ModelUsage struct {
+	Provider  string
+	KeyHash   string
+	Model     string
+	Day       string
+	Requests  int64
+	Tokens    int64
+	Exhausted bool
+}
+
+type ModelUsageStats struct {
+	Model    string
+	Requests int64
+	Tokens   int64
+}
+
+// ModelUsageTrend — агрегированная статистика за один день по всему провайдеру.
+type ModelUsageTrend struct {
+	Day        string `json:"day"`
+	Requests   int64  `json:"requests"`
+	Tokens     int64  `json:"tokens"`
+	LatencyAvg int64  `json:"latency_avg_ms"`
+	Errors     int64  `json:"errors"`
+}
+
 func HashKey(key string) string {
 	h := sha256.New()
 	h.Write([]byte(key))
@@ -189,6 +214,20 @@ func (s *Store) migrate() error {
 			description TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS model_usage (
+			provider TEXT NOT NULL,
+			key_hash TEXT NOT NULL,
+			model TEXT NOT NULL,
+			day TEXT NOT NULL,
+			requests INTEGER NOT NULL DEFAULT 0,
+			tokens INTEGER NOT NULL DEFAULT 0,
+			exhausted INTEGER NOT NULL DEFAULT 0,
+			latency_sum_ms INTEGER NOT NULL DEFAULT 0,
+			errors INTEGER NOT NULL DEFAULT 0,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (provider, key_hash, model, day)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_model_usage_day ON model_usage(provider, day, model);`,
 	}
 
 	for _, q := range queries {
@@ -221,8 +260,123 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN description TEXT NOT NULL DEFAULT '';`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_keys_provider ON keys(provider);`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);`)
+	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN latency_sum_ms INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN errors INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 0, status = CASE WHEN status = 'day_exhausted' THEN 'unchecked' ELSE status END WHERE provider = 'aihubmix' AND max_limit = 10;`)
 
 	return nil
+}
+
+func UTCDay(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
+}
+
+func (s *Store) GetModelUsage(provider, keyHash, model string, now time.Time) (ModelUsage, error) {
+	u := ModelUsage{Provider: provider, KeyHash: keyHash, Model: model, Day: UTCDay(now)}
+	var exhausted int
+	err := s.db.QueryRow(`
+		SELECT requests, tokens, exhausted
+		FROM model_usage
+		WHERE provider = ? AND key_hash = ? AND model = ? AND day = ?
+	`, provider, keyHash, model, u.Day).Scan(&u.Requests, &u.Tokens, &exhausted)
+	if err == sql.ErrNoRows {
+		return u, nil
+	}
+	if err != nil {
+		return u, err
+	}
+	u.Exhausted = exhausted != 0
+	return u, nil
+}
+
+func (s *Store) AddModelUsage(provider, keyHash, model string, now time.Time, requests, tokens, latencySumMs int64, errors int) error {
+	_, err := s.db.Exec(`
+		INSERT INTO model_usage (provider, key_hash, model, day, requests, tokens, latency_sum_ms, errors, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
+			requests = requests + excluded.requests,
+			tokens = tokens + excluded.tokens,
+			latency_sum_ms = latency_sum_ms + excluded.latency_sum_ms,
+			errors = errors + excluded.errors,
+			updated_at = excluded.updated_at
+	`, provider, keyHash, model, UTCDay(now), requests, tokens, latencySumMs, errors, now.UTC())
+	return err
+}
+
+func (s *Store) MarkModelExhausted(provider, keyHash, model string, now time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO model_usage (provider, key_hash, model, day, exhausted, updated_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
+			exhausted = 1,
+			updated_at = excluded.updated_at
+	`, provider, keyHash, model, UTCDay(now), now.UTC())
+	return err
+}
+
+func (s *Store) GetModelUsageStats(provider string, now time.Time) ([]ModelUsageStats, error) {
+	rows, err := s.db.Query(`
+		SELECT model, COALESCE(SUM(requests), 0), COALESCE(SUM(tokens), 0)
+		FROM model_usage
+		WHERE provider = ? AND day = ?
+		GROUP BY model
+		ORDER BY requests DESC
+	`, provider, UTCDay(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []ModelUsageStats
+	for rows.Next() {
+		var u ModelUsageStats
+		if err := rows.Scan(&u.Model, &u.Requests, &u.Tokens); err != nil {
+			return nil, err
+		}
+		res = append(res, u)
+	}
+	return res, rows.Err()
+}
+
+// GetModelUsageTrend возвращает агрегированную статистику по всем моделям провайдера
+// за последние `days` суток, отсортированные по возрастанию дня.
+func (s *Store) GetModelUsageTrend(provider string, days int) ([]ModelUsageTrend, error) {
+	rows, err := s.db.Query(`
+		SELECT day,
+		       COALESCE(SUM(requests), 0),
+		       COALESCE(SUM(tokens), 0),
+		       CASE WHEN SUM(requests) > 0
+		            THEN CAST(SUM(latency_sum_ms) / SUM(requests) AS INTEGER)
+		            ELSE 0 END,
+		       COALESCE(SUM(errors), 0)
+		FROM model_usage
+		WHERE provider = ?
+		GROUP BY day
+		ORDER BY day DESC
+		LIMIT ?
+	`, provider, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var desc []ModelUsageTrend
+	for rows.Next() {
+		var t ModelUsageTrend
+		if err := rows.Scan(&t.Day, &t.Requests, &t.Tokens, &t.LatencyAvg, &t.Errors); err != nil {
+			return nil, err
+		}
+		desc = append(desc, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Развернём в хронологическом порядке (старые → новые) для графиков.
+	for i, j := 0, len(desc)-1; i < j; i, j = i+1, j-1 {
+		desc[i], desc[j] = desc[j], desc[i]
+	}
+	return desc, nil
 }
 
 func (s *Store) AddKeys(keys []string, provider string) (int, error) {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"openrouter-gateway/internal/limits"
 	"openrouter-gateway/internal/store"
 )
 
@@ -17,10 +18,6 @@ type KeyPool struct {
 	keys    []*KeyState
 	keysMap map[string]*KeyState // hash -> KeyState
 }
-
-// aihubmixFreeLimit — дневной лимит free-запросов на аккаунт AIHubMix (10).
-// AIHubMix не отдаёт квоту через API; счётчик ведётся локально.
-const aihubmixFreeLimit = 10
 
 func NewKeyPool(s *store.Store, provider string) (*KeyPool, error) {
 	pool := &KeyPool{
@@ -56,12 +53,6 @@ func (kp *KeyPool) Load() error {
 			continue
 		}
 
-		// ponytail: AIHubMix keys получают MaxLimit=10 (free-квота) один раз при загрузке.
-		// После этого хранится в БД. Сравнение по y/m/d — если новые сутки, MaxLimit не сбрасывается (он постоянный).
-		if kp.provider == "aihubmix" && dbK.MaxLimit == 0 {
-			dbK.MaxLimit = aihubmixFreeLimit
-		}
-
 		var ks *KeyState
 		if existing, ok := kp.keysMap[dbK.KeyHash]; ok {
 			// Preserve in-memory counters/sliding windows but update DB parameters
@@ -87,18 +78,6 @@ func (kp *KeyPool) Load() error {
 
 	kp.keys = newKeys
 	kp.keysMap = newKeysMap
-
-	// ponytail: персист MaxLimit=10 для aihubmix ключей, у которых оно было 0 (один раз при первом Load).
-	if kp.provider == "aihubmix" {
-		for _, ks := range newKeys {
-			ks.mu.Lock()
-			needSync := ks.MaxLimit == aihubmixFreeLimit && ks.LastCheckedAt.IsZero()
-			ks.mu.Unlock()
-			if needSync {
-				kp.SyncKeyToDB(ks)
-			}
-		}
-	}
 
 	log.Printf("Key pool loaded from database. Total active keys: %d", len(kp.keys))
 	return nil
@@ -221,6 +200,56 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 			return best, nil
 		}
 		// Lost the race to another goroutine; exclude and pick again.
+		tried[best] = true
+	}
+}
+
+func (kp *KeyPool) GetBestKeyForModel(model string) (*KeyState, error) {
+	kp.mu.RLock()
+	defer kp.mu.RUnlock()
+
+	if len(kp.keys) == 0 {
+		return nil, fmt.Errorf("key pool is empty")
+	}
+
+	limit, _ := limits.AIHubMixFree(model)
+	now := time.Now()
+	tried := make(map[*KeyState]bool)
+	for {
+		var best *KeyState
+		var bestUsage int64
+		for _, k := range kp.keys {
+			if tried[k] {
+				continue
+			}
+			usage, err := kp.store.GetModelUsage(kp.provider, k.KeyHash, model, now)
+			if err != nil {
+				log.Printf("Failed to read model usage for %s/%s: %v", k.MaskedKey, model, err)
+				continue
+			}
+			if usage.Exhausted {
+				continue
+			}
+			if limit.RequestsDay > 0 && usage.Requests >= limit.RequestsDay {
+				continue
+			}
+			if limit.TokensDay > 0 && usage.Tokens >= limit.TokensDay {
+				continue
+			}
+			if !k.CanUseModel(now, model) {
+				continue
+			}
+			if best == nil || usage.Requests < bestUsage {
+				best, bestUsage = k, usage.Requests
+			}
+		}
+
+		if best == nil {
+			return nil, fmt.Errorf("all keys are exhausted, rate limited or in cooldown for model %s (pool size: %d)", model, len(kp.keys))
+		}
+		if best.TryReserveModel(now, model, limit.RPM) {
+			return best, nil
+		}
 		tried[best] = true
 	}
 }

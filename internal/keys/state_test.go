@@ -146,3 +146,31 @@ func TestPreventiveBlockResetsOnNewDay(t *testing.T) {
 		t.Fatalf("UsageToday = %d, want 0 after reset", ks.UsageToday)
 	}
 }
+
+func TestTryReserveModelIsPerModel(t *testing.T) {
+	ks := newState(20)
+	now := time.Now()
+
+	if !ks.TryReserveModel(now, "m1", 1) {
+		t.Fatal("first m1 reservation should pass")
+	}
+	if ks.TryReserveModel(now, "m1", 1) {
+		t.Fatal("second m1 reservation should hit RPM")
+	}
+	if !ks.TryReserveModel(now, "m2", 1) {
+		t.Fatal("m2 must have independent RPM")
+	}
+}
+
+func TestModelCooldownIsPerModel(t *testing.T) {
+	ks := newState(20)
+	now := time.Now()
+	ks.SetModelCooldown("m1", now.Add(time.Minute))
+
+	if ks.TryReserveModel(now, "m1", 5) {
+		t.Fatal("m1 should be in cooldown")
+	}
+	if !ks.TryReserveModel(now, "m2", 5) {
+		t.Fatal("m2 should stay usable")
+	}
+}
