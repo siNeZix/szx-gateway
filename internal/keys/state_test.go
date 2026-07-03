@@ -94,3 +94,55 @@ func TestDisabledKeyNotUsable(t *testing.T) {
 		t.Fatal("should not be able to reserve a disabled key")
 	}
 }
+
+// Превентивная блокировка: ключ с MaxLimit=10 и UsageToday=10 не выдаётся,
+// но статус остаётся active (day_exhausted ставится только при детекте заглушки).
+func TestPreventiveDayLimitBlock(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 10
+	ks.LastUsedAt = time.Now()
+	now := time.Now()
+
+	if ks.CanUse(now) {
+		t.Fatal("key at MaxLimit should be preventively blocked")
+	}
+	if ks.TryReserve(now) {
+		t.Fatal("should not reserve a key at MaxLimit")
+	}
+	if ks.Status == "day_exhausted" {
+		t.Fatal("preventive block must not change status to day_exhausted")
+	}
+}
+
+// MarkDayExhausted ставит day_exhausted и фиксирует UsageToday = MaxLimit.
+func TestMarkDayExhausted(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 3
+
+	ks.MarkDayExhausted()
+
+	if ks.Status != "day_exhausted" {
+		t.Fatalf("status = %s, want day_exhausted", ks.Status)
+	}
+	if ks.UsageToday != 10 {
+		t.Fatalf("UsageToday = %d, want 10 (MaxLimit)", ks.UsageToday)
+	}
+}
+
+// После смены суток превентивно заблокированный ключ снова usable.
+func TestPreventiveBlockResetsOnNewDay(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 10
+	ks.LastUsedAt = time.Now().Add(-48 * time.Hour)
+
+	now := time.Now()
+	if !ks.CanUse(now) {
+		t.Fatal("key should be usable again after new day reset")
+	}
+	if ks.UsageToday != 0 {
+		t.Fatalf("UsageToday = %d, want 0 after reset", ks.UsageToday)
+	}
+}

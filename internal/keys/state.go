@@ -104,6 +104,14 @@ func (ks *KeyState) usable(now time.Time) bool {
 	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" {
 		return false
 	}
+	// ponytail: превентивная блокировка по дневному free-лимиту (MaxLimit).
+	// Для AIHubMix MaxLimit=10: ключ не выдаётся на 10-м запросе, не дожидаясь
+	// 11-го с 200-заглушкой. Статус НЕ меняется — day_exhausted ставится только
+	// при детекте заглушки (MarkDayExhausted), чтобы fallback в GetBestKey мог
+	// сделать диагностический 11-й запрос. Сбрасывается по суткам.
+	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
+		return false
+	}
 	if ks.CooldownUntil.After(now) {
 		return false
 	}
@@ -187,4 +195,15 @@ func (ks *KeyState) UpdateLimitRemaining(val int64) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	ks.LimitRemaining = val
+}
+
+// MarkDayExhausted переводит ключ в day_exhausted и фиксирует UsageToday = MaxLimit.
+// Используется при детекте 200-заглушки free-квоты AIHubMix.
+func (ks *KeyState) MarkDayExhausted() {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.Status = "day_exhausted"
+	if ks.MaxLimit > 0 {
+		ks.UsageToday = ks.MaxLimit
+	}
 }

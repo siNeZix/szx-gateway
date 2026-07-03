@@ -25,30 +25,35 @@ type OpenRouterKeyResponse struct {
 }
 
 type KeyChecker struct {
-	pool        *KeyPool
-	ttl         time.Duration
-	rateLimit   int
-	interval    time.Duration
-	concurrency int
-	client      *http.Client
-	stopChan    chan struct{}
-	wg          sync.WaitGroup
+	pool         *KeyPool
+	ttl          time.Duration
+	rateLimit    int
+	interval     time.Duration
+	concurrency  int
+	client       *http.Client
+	stopChan     chan struct{}
+	wg           sync.WaitGroup
+	checkURL     string
+	providerType string
 }
 
-func NewKeyChecker(pool *KeyPool, ttl time.Duration, rateLimit int, interval time.Duration, concurrency int) *KeyChecker {
+func NewKeyChecker(pool *KeyPool, ttl time.Duration, rateLimit int, interval time.Duration, concurrency int, checkURL, providerType string) *KeyChecker {
 	return &KeyChecker{
-		pool:        pool,
-		ttl:         ttl,
-		rateLimit:   rateLimit,
-		interval:    interval,
-		concurrency: concurrency,
-		client:      &http.Client{Timeout: 10 * time.Second},
-		stopChan:    make(chan struct{}),
+		pool:         pool,
+		ttl:          ttl,
+		rateLimit:    rateLimit,
+		interval:     interval,
+		concurrency:  concurrency,
+		client:       &http.Client{Timeout: 10 * time.Second},
+		stopChan:     make(chan struct{}),
+		checkURL:     checkURL,
+		providerType: providerType,
 	}
 }
 
 func (kc *KeyChecker) Start() {
-	log.Printf("Starting background Key Checker (rate limit: %d per %v, concurrency: %d)...", kc.rateLimit, kc.interval, kc.concurrency)
+	log.Printf("Starting background Key Checker [%s] (rate limit: %d per %v, concurrency: %d)...",
+		kc.providerType, kc.rateLimit, kc.interval, kc.concurrency)
 
 	kc.wg.Add(1)
 	go kc.runLoop()
@@ -146,7 +151,7 @@ func (kc *KeyChecker) findKeyToVerify() *KeyState {
 }
 
 func (kc *KeyChecker) CheckKey(ks *KeyState) {
-	req, err := http.NewRequest("GET", "https://openrouter.ai/api/v1/key", nil)
+	req, err := http.NewRequest("GET", kc.checkURL, nil)
 	if err != nil {
 		log.Printf("Failed to create verification request: %v", err)
 		return
@@ -163,7 +168,6 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	now := time.Now()
 	resp, err := kc.client.Do(req)
 	if err != nil {
-		// Connection error or timeout
 		log.Printf("Network error verifying key %s: %v", masked, err)
 		ks.SetCooldown(1*time.Minute, "")
 		return
@@ -171,8 +175,9 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	defer resp.Body.Close()
 
 	// Decode the body BEFORE taking the lock so we never hold ks.mu across I/O.
+	// Only OpenRouter returns a structured key info body worth parsing.
 	var keyResp OpenRouterKeyResponse
-	if resp.StatusCode == http.StatusOK {
+	if kc.providerType == "openrouter" && resp.StatusCode == http.StatusOK {
 		if err := json.NewDecoder(resp.Body).Decode(&keyResp); err != nil {
 			log.Printf("Failed to decode key response for %s: %v", masked, err)
 			return
@@ -188,51 +193,53 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// Update state with server data
-		var limitTotalVal, limitRemainingVal, usageVal, rateLimitReqVal sql.NullInt64
-		var rateLimitIntervalVal sql.NullString
+		// OpenRouter: обновляем лимиты/usage/rate-limit из тела. AIHubMix: просто active.
+		if kc.providerType == "openrouter" {
+			var limitTotalVal, limitRemainingVal, usageVal, rateLimitReqVal sql.NullInt64
+			var rateLimitIntervalVal sql.NullString
 
-		if keyResp.Data.Limit != nil {
-			ks.MaxLimit = *keyResp.Data.Limit
-			limitTotalVal = sql.NullInt64{Int64: *keyResp.Data.Limit, Valid: true}
-		}
-		if keyResp.Data.LimitRemaining != nil {
-			ks.LimitRemaining = *keyResp.Data.LimitRemaining
-			limitRemainingVal = sql.NullInt64{Int64: *keyResp.Data.LimitRemaining, Valid: true}
-		}
-		if keyResp.Data.Usage != nil {
-			usageVal = sql.NullInt64{Int64: *keyResp.Data.Usage, Valid: true}
-		}
-		if keyResp.Data.IsFreeTier != nil {
-			ks.IsFreeTier = *keyResp.Data.IsFreeTier
-		}
-		if keyResp.Data.RateLimit != nil {
-			ks.RateLimitReq = keyResp.Data.RateLimit.Requests
-			rateLimitReqVal = sql.NullInt64{Int64: int64(keyResp.Data.RateLimit.Requests), Valid: true}
-			if keyResp.Data.RateLimit.Interval != nil {
-				ks.RateLimitInterval = *keyResp.Data.RateLimit.Interval
-				rateLimitIntervalVal = sql.NullString{String: *keyResp.Data.RateLimit.Interval, Valid: true}
+			if keyResp.Data.Limit != nil {
+				ks.MaxLimit = *keyResp.Data.Limit
+				limitTotalVal = sql.NullInt64{Int64: *keyResp.Data.Limit, Valid: true}
 			}
-		}
+			if keyResp.Data.LimitRemaining != nil {
+				ks.LimitRemaining = *keyResp.Data.LimitRemaining
+				limitRemainingVal = sql.NullInt64{Int64: *keyResp.Data.LimitRemaining, Valid: true}
+			}
+			if keyResp.Data.Usage != nil {
+				usageVal = sql.NullInt64{Int64: *keyResp.Data.Usage, Valid: true}
+			}
+			if keyResp.Data.IsFreeTier != nil {
+				ks.IsFreeTier = *keyResp.Data.IsFreeTier
+			}
+			if keyResp.Data.RateLimit != nil {
+				ks.RateLimitReq = keyResp.Data.RateLimit.Requests
+				rateLimitReqVal = sql.NullInt64{Int64: int64(keyResp.Data.RateLimit.Requests), Valid: true}
+				if keyResp.Data.RateLimit.Interval != nil {
+					ks.RateLimitInterval = *keyResp.Data.RateLimit.Interval
+					rateLimitIntervalVal = sql.NullString{String: *keyResp.Data.RateLimit.Interval, Valid: true}
+				}
+			}
 
-		// Update Status
-		if ks.LimitRemaining <= 0 && ks.MaxLimit > 0 {
-			ks.Status = "day_exhausted"
+			if ks.LimitRemaining <= 0 && ks.MaxLimit > 0 {
+				ks.Status = "day_exhausted"
+			} else {
+				ks.Status = "active"
+			}
+
+			kc.pool.LogRateLimit(&store.DBRateLimit{
+				Timestamp:         now,
+				KeyHash:           ks.KeyHash,
+				Source:            "checker",
+				LimitTotal:        limitTotalVal,
+				LimitRemaining:    limitRemainingVal,
+				Usage:             usageVal,
+				RateLimitReq:      rateLimitReqVal,
+				RateLimitInterval: rateLimitIntervalVal,
+			})
 		} else {
 			ks.Status = "active"
 		}
-
-		// Log limit snapshot
-		kc.pool.LogRateLimit(&store.DBRateLimit{
-			Timestamp:         now,
-			KeyHash:           ks.KeyHash,
-			Source:            "checker",
-			LimitTotal:        limitTotalVal,
-			LimitRemaining:    limitRemainingVal,
-			Usage:             usageVal,
-			RateLimitReq:      rateLimitReqVal,
-			RateLimitInterval: rateLimitIntervalVal,
-		})
 
 	case http.StatusUnauthorized, http.StatusForbidden:
 		log.Printf("Key %s is INVALID (Status: %d)", masked, resp.StatusCode)

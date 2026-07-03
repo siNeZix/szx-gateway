@@ -18,6 +18,10 @@ type KeyPool struct {
 	keysMap map[string]*KeyState // hash -> KeyState
 }
 
+// aihubmixFreeLimit — дневной лимит free-запросов на аккаунт AIHubMix (10).
+// AIHubMix не отдаёт квоту через API; счётчик ведётся локально.
+const aihubmixFreeLimit = 10
+
 func NewKeyPool(s *store.Store, provider string) (*KeyPool, error) {
 	pool := &KeyPool{
 		store:    s,
@@ -52,6 +56,12 @@ func (kp *KeyPool) Load() error {
 			continue
 		}
 
+		// ponytail: AIHubMix keys получают MaxLimit=10 (free-квота) один раз при загрузке.
+		// После этого хранится в БД. Сравнение по y/m/d — если новые сутки, MaxLimit не сбрасывается (он постоянный).
+		if kp.provider == "aihubmix" && dbK.MaxLimit == 0 {
+			dbK.MaxLimit = aihubmixFreeLimit
+		}
+
 		var ks *KeyState
 		if existing, ok := kp.keysMap[dbK.KeyHash]; ok {
 			// Preserve in-memory counters/sliding windows but update DB parameters
@@ -77,6 +87,18 @@ func (kp *KeyPool) Load() error {
 
 	kp.keys = newKeys
 	kp.keysMap = newKeysMap
+
+	// ponytail: персист MaxLimit=10 для aihubmix ключей, у которых оно было 0 (один раз при первом Load).
+	if kp.provider == "aihubmix" {
+		for _, ks := range newKeys {
+			ks.mu.Lock()
+			needSync := ks.MaxLimit == aihubmixFreeLimit && ks.LastCheckedAt.IsZero()
+			ks.mu.Unlock()
+			if needSync {
+				kp.SyncKeyToDB(ks)
+			}
+		}
+	}
 
 	log.Printf("Key pool loaded from database. Total active keys: %d", len(kp.keys))
 	return nil
@@ -157,7 +179,42 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 		}
 
 		if best == nil {
-			return nil, fmt.Errorf("all keys are rate limited, exhausted or in cooldown (pool size: %d)", len(kp.keys))
+			// ponytail: fallback — все ключи превентивно заблокированы по MaxLimit
+			// (AIHubMix: все сделали 10/10). Пытаемся 11-м запросом — прокси ловит
+			// 200-заглушку → MarkDayExhausted. Выбираем с наименьшим usage и не
+			// блокируемыми статусами (invalid/disabled/day_exhausted исключаются).
+			var fb *KeyState
+			var fbUsage int64
+			for _, k := range kp.keys {
+				if tried[k] {
+					continue
+				}
+				k.mu.Lock()
+				status := k.Status
+				cooldown := k.CooldownUntil
+				usage := k.UsageToday
+				maxLimit := k.MaxLimit
+				k.mu.Unlock()
+				if status == "invalid" || status == "disabled" || status == "day_exhausted" {
+					continue
+				}
+				if cooldown.After(now) {
+					continue
+				}
+				if maxLimit <= 0 || usage < maxLimit {
+					continue // ещё не исчерпан — первый проход должен был его найти
+				}
+				if fb == nil || usage < fbUsage {
+					fb, fbUsage = k, usage
+				}
+			}
+			if fb == nil {
+				return nil, fmt.Errorf("all keys are rate limited, exhausted or in cooldown (pool size: %d)", len(kp.keys))
+			}
+			// ponytail: диагностический 11-й запрос — регистрируем без проверки usable,
+			// чтобы прокси получил реальный ответ AIHubMix и пометил ключ через MarkDayExhausted.
+			fb.RegisterRequest(now)
+			return fb, nil
 		}
 
 		if best.TryReserve(now) {
@@ -168,6 +225,7 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 	}
 }
 
+// GetAllKeys returns a snapshot of all keys in the pool.
 func (kp *KeyPool) AllKeys() []*KeyState {
 	kp.mu.RLock()
 	defer kp.mu.RUnlock()
