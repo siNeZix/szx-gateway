@@ -52,12 +52,26 @@ func main() {
 		cfg.KeyCheckRate,
 		cfg.KeyCheckRateInterval,
 		cfg.KeyCheckConcurrency,
+		"https://openrouter.ai/api/v1/key",
+		"openrouter",
 	)
 	keyChecker.Start()
-	log.Println("Background key checker started (OpenRouter only).")
+	log.Println("Background key checker started (OpenRouter).")
+
+	aihubmixChecker := keys.NewKeyChecker(
+		aihubmixPool,
+		cfg.KeyCheckTTL,
+		cfg.KeyCheckRate,
+		cfg.KeyCheckRateInterval,
+		cfg.KeyCheckConcurrency,
+		"https://aihubmix.com/v1/models",
+		"aihubmix",
+	)
+	aihubmixChecker.Start()
+	log.Println("Background key checker started (AIHubMix).")
 
 	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr)
-	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool)
+	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr)
 
 	pools := map[string]*keys.KeyPool{
 		"openrouter": openRouterPool,
@@ -97,6 +111,7 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 	keyChecker.Stop()
+	aihubmixChecker.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
