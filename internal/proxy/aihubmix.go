@@ -161,7 +161,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		if resp.StatusCode == 200 && containsAny(firstBytes, aihubmixQuotaMarkers) {
 			resp.Body.Close()
 			log.Printf("[AIHubMix] key %s free-quota exhausted (10/acc)", keyState.MaskedKey)
-			keyState.MarkDayExhausted()
+			keyState.SetStatus("day_exhausted")
 			h.pool.SyncKeyToDB(keyState)
 			continue
 		}
