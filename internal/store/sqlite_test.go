@@ -19,7 +19,7 @@ func TestStore_GetGeneralStats_Empty(t *testing.T) {
 	}
 	defer s.Close()
 
-	stats, err := s.GetGeneralStats()
+	stats, err := s.GetGeneralStats("openrouter")
 	if err != nil {
 		t.Fatalf("GetGeneralStats failed on empty DB: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestStore_AddAndDeleteKeys(t *testing.T) {
 
 	// 1. Add some keys
 	keys := []string{"sk-or-v1-abc123xyz", "sk-or-v1-def456uvw"}
-	added, err := s.AddKeys(keys)
+	added, err := s.AddKeys(keys, "openrouter")
 	if err != nil {
 		t.Fatalf("failed to add keys: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestStore_AddAndDeleteKeys(t *testing.T) {
 	}
 
 	// 2. Fetch keys and verify fields
-	dbKeys, err := s.GetKeys()
+	dbKeys, err := s.GetKeys("openrouter")
 	if err != nil {
 		t.Fatalf("failed to get keys: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestStore_AddAndDeleteKeys(t *testing.T) {
 	}
 
 	// 3. Test duplicate addition (ON CONFLICT DO UPDATE should run successfully)
-	_, err = s.AddKeys([]string{"sk-or-v1-abc123xyz"})
+	_, err = s.AddKeys([]string{"sk-or-v1-abc123xyz"}, "openrouter")
 	if err != nil {
 		t.Fatalf("failed to add duplicate key: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestStore_AddAndDeleteKeys(t *testing.T) {
 	}
 
 	// 5. Verify deletion
-	dbKeysAfter, err := s.GetKeys()
+	dbKeysAfter, err := s.GetKeys("openrouter")
 	if err != nil {
 		t.Fatalf("failed to get keys after deletion: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestStore_BulkOperations(t *testing.T) {
 	defer s.Close()
 
 	keys := []string{"key1", "key2", "key3"}
-	_, err = s.AddKeys(keys)
+	_, err = s.AddKeys(keys, "openrouter")
 	if err != nil {
 		t.Fatalf("failed to add keys: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestStore_BulkOperations(t *testing.T) {
 		t.Fatalf("failed to update keys status: %v", err)
 	}
 
-	dbKeys, err := s.GetKeys()
+	dbKeys, err := s.GetKeys("openrouter")
 	if err != nil {
 		t.Fatalf("failed to get keys: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStore_BulkOperations(t *testing.T) {
 		t.Fatalf("failed to delete keys: %v", err)
 	}
 
-	dbKeysAfter, err := s.GetKeys()
+	dbKeysAfter, err := s.GetKeys("openrouter")
 	if err != nil {
 		t.Fatalf("failed to get keys after deletion: %v", err)
 	}
@@ -177,6 +177,7 @@ func TestStore_RateLimitsAndRequestsLog(t *testing.T) {
 		LatencyMs:        150,
 		TTFTMs:           80,
 		IsStream:         true,
+		Provider:         "openrouter",
 	}
 
 	if err := s.LogRequest(req); err != nil {

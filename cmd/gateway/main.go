@@ -18,13 +18,11 @@ import (
 )
 
 func main() {
-	log.Println("Starting OpenRouter Free Gateway...")
+	log.Println("Starting LLM Gateway (OpenRouter + AIHubMix)...")
 
-	// 1. Load Config
 	cfg := config.Load()
-	log.Printf("Loaded configuration. Listening on %s", cfg.ListenAddr)
+	log.Printf("OpenRouter on %s, AIHubMix on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr)
 
-	// 2. Initialize DB Store
 	dbStore, err := store.New(cfg.DbPath)
 	if err != nil {
 		log.Fatalf("Database initialization failed: %v", err)
@@ -32,70 +30,82 @@ func main() {
 	defer dbStore.Close()
 	log.Printf("SQLite database initialized at %s", cfg.DbPath)
 
-	// 3. Initialize Key Pool (reads from DB)
-	keyPool, err := keys.NewKeyPool(dbStore)
+	openRouterPool, err := keys.NewKeyPool(dbStore, "openrouter")
 	if err != nil {
-		log.Fatalf("Key pool initialization failed: %v", err)
+		log.Fatalf("OpenRouter key pool init failed: %v", err)
 	}
-	log.Println("Key pool loaded and synchronized with database.")
+	log.Println("OpenRouter key pool loaded.")
 
-	// 4. Initialize & Start Model Ranking Manager (Shir-Man API)
+	aihubmixPool, err := keys.NewKeyPool(dbStore, "aihubmix")
+	if err != nil {
+		log.Fatalf("AIHubMix key pool init failed: %v", err)
+	}
+	log.Println("AIHubMix key pool loaded.")
+
 	rankingMgr := models.NewRankingManager(dbStore, cfg.RankingRefresh)
 	rankingMgr.Start()
 	log.Println("Model ranking manager started.")
 
-	// 5. Initialize & Start Background Key Checker
 	keyChecker := keys.NewKeyChecker(
-		keyPool,
+		openRouterPool,
 		cfg.KeyCheckTTL,
 		cfg.KeyCheckRate,
 		cfg.KeyCheckRateInterval,
 		cfg.KeyCheckConcurrency,
 	)
 	keyChecker.Start()
-	log.Println("Background key verification worker started.")
+	log.Println("Background key checker started (OpenRouter only).")
 
-	// 6. Setup Handlers
-	proxyHandler := proxy.NewProxyHandler(cfg, dbStore, keyPool, rankingMgr)
-	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, keyPool)
+	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr)
+	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool)
 
-	mux := http.NewServeMux()
-
-	// Setup Dashboard (Basic Auth protected)
-	webServer.Start(mux)
-
-	// Setup API Gateway routes (Bearer Token protected)
-	mux.Handle("/v1/", proxyHandler)
-
-	// 7. Start HTTP Server
-	server := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: mux,
+	pools := map[string]*keys.KeyPool{
+		"openrouter": openRouterPool,
+		"aihubmix":   aihubmixPool,
 	}
+	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, pools)
+
+	// OpenRouter mux: /v1/* → OpenRouter proxy, / → admin
+	orMux := http.NewServeMux()
+	webServer.Start(orMux)
+	orMux.Handle("/v1/", openRouterProxy)
+
+	// AIHubMix mux: /v1/* → AIHubMix proxy, / → same admin
+	amMux := http.NewServeMux()
+	webServer.Start(amMux)
+	amMux.Handle("/v1/", aihubmixProxy)
+
+	orServer := &http.Server{Addr: cfg.ListenAddr, Handler: orMux}
+	amServer := &http.Server{Addr: cfg.AIHubMixListenAddr, Handler: amMux}
 
 	go func() {
-		log.Printf("HTTP Server is running on %s", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failure: %v", err)
+		log.Printf("OpenRouter server on %s", cfg.ListenAddr)
+		if err := orServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("OpenRouter server failure: %v", err)
+		}
+	}()
+	go func() {
+		log.Printf("AIHubMix server on %s", cfg.AIHubMixListenAddr)
+		if err := amServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("AIHubMix server failure: %v", err)
 		}
 	}()
 
-	// 8. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down gracefully...")
-
-	// Stop Key Checker
 	keyChecker.Stop()
 
-	// Shutdown HTTP Server
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+	if err := orServer.Shutdown(ctx); err != nil {
+		log.Printf("OpenRouter shutdown error: %v", err)
+	}
+	if err := amServer.Shutdown(ctx); err != nil {
+		log.Printf("AIHubMix shutdown error: %v", err)
 	}
 
-	log.Println("OpenRouter Free Gateway stopped.")
+	log.Println("LLM Gateway stopped.")
 }

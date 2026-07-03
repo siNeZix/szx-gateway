@@ -10,6 +10,7 @@ type Config struct {
 	GatewayToken         string
 	DbPath               string
 	ListenAddr           string
+	AIHubMixListenAddr   string
 	RankingRefresh       time.Duration
 	KeyCheckTTL          time.Duration
 	KeyCheckRate         int
@@ -26,6 +27,7 @@ func Load() *Config {
 	flag.StringVar(&cfg.GatewayToken, "token", getEnv("GATEWAY_TOKEN", "super-secret-gateway-token"), "Bearer token required to use the gateway")
 	flag.StringVar(&cfg.DbPath, "db-path", getEnv("DB_PATH", "gateway.db"), "Path to the SQLite database")
 	flag.StringVar(&cfg.ListenAddr, "listen", getEnv("LISTEN_ADDR", ":8080"), "Listen address for the gateway server")
+	flag.StringVar(&cfg.AIHubMixListenAddr, "aihubmix-listen", getEnv("AIHUBMIX_LISTEN_ADDR", ":8081"), "Listen address for the AIHubMix proxy server")
 
 	rankingRefreshStr := flag.String("ranking-refresh", getEnv("RANKING_REFRESH", "1h"), "Interval for refreshing Shir-Man model rankings")
 	keyCheckTTLStr := flag.String("key-ttl", getEnv("KEY_CHECK_TTL", "1h"), "How long key verification remains valid")

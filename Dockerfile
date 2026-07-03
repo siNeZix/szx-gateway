@@ -17,7 +17,8 @@ USER app
 WORKDIR /app
 COPY --from=build /out/gateway /app/gateway
 ENV DB_PATH=/data/gateway.db \
-    LISTEN_ADDR=:8080
+    LISTEN_ADDR=:8080 \
+    AIHUBMIX_LISTEN_ADDR=:8081
 VOLUME /data
-EXPOSE 8080
+EXPOSE 8080 8081
 ENTRYPOINT ["/app/gateway"]

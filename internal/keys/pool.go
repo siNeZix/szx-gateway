@@ -10,17 +10,19 @@ import (
 )
 
 type KeyPool struct {
-	store *store.Store
+	store    *store.Store
+	provider string
 
 	mu      sync.RWMutex
 	keys    []*KeyState
 	keysMap map[string]*KeyState // hash -> KeyState
 }
 
-func NewKeyPool(s *store.Store) (*KeyPool, error) {
+func NewKeyPool(s *store.Store, provider string) (*KeyPool, error) {
 	pool := &KeyPool{
-		store:   s,
-		keysMap: make(map[string]*KeyState),
+		store:    s,
+		provider: provider,
+		keysMap:  make(map[string]*KeyState),
 	}
 
 	if err := pool.Load(); err != nil {
@@ -35,7 +37,7 @@ func (kp *KeyPool) Load() error {
 	defer kp.mu.Unlock()
 
 	// 1. Load from SQLite
-	dbKeys, err := kp.store.GetKeys()
+	dbKeys, err := kp.store.GetKeys(kp.provider)
 	if err != nil {
 		return fmt.Errorf("failed to fetch keys from database: %w", err)
 	}
@@ -87,7 +89,7 @@ func (kp *KeyPool) AddKeys(rawKeys []string) (int, error) {
 		return 0, nil
 	}
 
-	added, err := kp.store.AddKeys(rawKeys)
+	added, err := kp.store.AddKeys(rawKeys, kp.provider)
 	if err != nil {
 		return 0, err
 	}

@@ -42,6 +42,7 @@ type DBRequest struct {
 	ErrorMsg         string
 	TTFTMs           int64
 	IsStream         bool
+	Provider         string
 }
 
 type DBRateLimit struct {
@@ -169,16 +170,20 @@ func (s *Store) migrate() error {
 		}
 	}
 
-	// Migration for databases created before raw_key/ttft_ms/is_stream existed in the CREATE above.
+	// Migration for databases created before raw_key/ttft_ms/is_stream/provider existed in the CREATE above.
 	// On fresh DBs the columns already exist, so these errors are ignored.
 	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN raw_key TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN is_stream INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_keys_provider ON keys(provider);`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);`)
 
 	return nil
 }
 
-func (s *Store) AddKeys(keys []string) (int, error) {
+func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -186,9 +191,9 @@ func (s *Store) AddKeys(keys []string) (int, error) {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key)
-		VALUES (?, ?, 'unchecked', ?, ?, ?, ?)
-		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key;
+		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider)
+		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?)
+		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider;
 	`)
 	if err != nil {
 		return 0, err
@@ -201,7 +206,7 @@ func (s *Store) AddKeys(keys []string) (int, error) {
 	for _, k := range keys {
 		h := HashKey(k)
 		masked := MaskKey(k)
-		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k)
+		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider)
 		if err != nil {
 			return 0, err
 		}
@@ -291,13 +296,14 @@ func (s *Store) UpdateKey(k *DBKey) error {
 	return err
 }
 
-func (s *Store) GetKeys() ([]*DBKey, error) {
+func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 	rows, err := s.db.Query(`
 		SELECT key_hash, masked_key, status, limit_remaining, usage_today, max_limit, 
 		       is_free_tier, rate_limit_req, rate_limit_interval, cooldown_until, 
 		       last_checked_at, last_used_at, raw_key
 		FROM keys
-	`)
+		WHERE provider = ?
+	`, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -327,9 +333,9 @@ func (s *Store) LogRequest(r *DBRequest) error {
 		isStreamInt = 1
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO requests (timestamp, key_hash, model, status_code, prompt_tokens, completion_tokens, latency_ms, error_msg, ttft_ms, is_stream)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, r.Timestamp, r.KeyHash, r.Model, r.StatusCode, r.PromptTokens, r.CompletionTokens, r.LatencyMs, r.ErrorMsg, r.TTFTMs, isStreamInt)
+		INSERT INTO requests (timestamp, key_hash, model, status_code, prompt_tokens, completion_tokens, latency_ms, error_msg, ttft_ms, is_stream, provider)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, r.Timestamp, r.KeyHash, r.Model, r.StatusCode, r.PromptTokens, r.CompletionTokens, r.LatencyMs, r.ErrorMsg, r.TTFTMs, isStreamInt, r.Provider)
 	return err
 }
 
@@ -471,7 +477,7 @@ type KeyUsageStats struct {
 	CooldownUntil time.Time
 }
 
-func (s *Store) GetGeneralStats() (*GeneralStats, error) {
+func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 	stats := &GeneralStats{}
 
 	// Counts
@@ -483,13 +489,14 @@ func (s *Store) GetGeneralStats() (*GeneralStats, error) {
 			COALESCE(SUM(CASE WHEN status='invalid' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status='unchecked' THEN 1 ELSE 0 END), 0)
 		FROM keys
-	`).Scan(&stats.TotalKeys, &stats.ActiveKeys, &stats.BlockedKeys, &stats.InvalidKeys, &stats.UncheckedKeys)
+		WHERE provider = ?
+	`, provider).Scan(&stats.TotalKeys, &stats.ActiveKeys, &stats.BlockedKeys, &stats.InvalidKeys, &stats.UncheckedKeys)
 	if err != nil {
 		return nil, err
 	}
 
 	// Request stats
-	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests`).Scan(&stats.TotalRequests)
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE provider = ?`, provider).Scan(&stats.TotalRequests)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +504,7 @@ func (s *Store) GetGeneralStats() (*GeneralStats, error) {
 	// Local midnight, matching the per-key daily reset (KeyState.ResetDailyUsageIfNewDay).
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE timestamp >= ?`, todayStart).Scan(&stats.TodayRequests)
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND provider = ?`, todayStart, provider).Scan(&stats.TodayRequests)
 	if err != nil {
 		return nil, err
 	}
@@ -505,17 +512,18 @@ func (s *Store) GetGeneralStats() (*GeneralStats, error) {
 	return stats, nil
 }
 
-func (s *Store) GetModelStats() ([]ModelStats, error) {
+func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 	rows, err := s.db.Query(`
 		SELECT 
 			model, 
 			COUNT(*), 
 			CAST(AVG(latency_ms) AS INTEGER), 
 			SUM(prompt_tokens + completion_tokens) 
-		FROM requests 
+		FROM requests
+		WHERE provider = ?
 		GROUP BY model 
 		ORDER BY COUNT(*) DESC
-	`)
+	`, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +543,7 @@ func (s *Store) GetModelStats() ([]ModelStats, error) {
 	return res, nil
 }
 
-func (s *Store) GetKeyUsageStats() ([]KeyUsageStats, error) {
+func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 	rows, err := s.db.Query(`
 		SELECT 
 			k.masked_key, 
@@ -547,10 +555,11 @@ func (s *Store) GetKeyUsageStats() ([]KeyUsageStats, error) {
 			COUNT(r.id) as total_reqs,
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) as err_reqs
 		FROM keys k
-		LEFT JOIN requests r ON k.key_hash = r.key_hash
+		LEFT JOIN requests r ON k.key_hash = r.key_hash AND r.provider = k.provider
+		WHERE k.provider = ?
 		GROUP BY k.key_hash
 		ORDER BY k.usage_today DESC, total_reqs DESC
-	`)
+	`, provider)
 	if err != nil {
 		return nil, err
 	}

@@ -340,6 +340,7 @@ func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.R
 		LatencyMs:        latencyMs,
 		TTFTMs:           latencyMs, // For non-stream requests, TTFT equals total latency
 		IsStream:         false,
+		Provider:         "openrouter",
 	})
 	if err != nil {
 		log.Printf("Failed to log request to DB: %v", err)
@@ -434,6 +435,7 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 		LatencyMs:        latencyMs, // For stream, this is now the accurate total response time
 		TTFTMs:           ttftMs,    // Time To First Token
 		IsStream:         true,
+		Provider:         "openrouter",
 	})
 	if err != nil {
 		log.Printf("Failed to log request to DB: %v", err)

@@ -19,7 +19,7 @@ type WebServer struct {
 	cfg        *config.Config
 	store      *store.Store
 	rankingMgr *models.RankingManager
-	pool       *keys.KeyPool
+	pools      map[string]*keys.KeyPool
 }
 
 type DashboardData struct {
@@ -31,14 +31,15 @@ type DashboardData struct {
 	UpdateTime   string
 	RefreshedAt  string
 	Token        string
+	Provider     string
 }
 
-func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pool *keys.KeyPool) *WebServer {
+func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool) *WebServer {
 	return &WebServer{
 		cfg:        cfg,
 		store:      s,
 		rankingMgr: rm,
-		pool:       pool,
+		pools:      pools,
 	}
 }
 
@@ -77,29 +78,42 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	general, err := ws.store.GetGeneralStats()
+	// Default provider: openrouter
+	provider := r.URL.Query().Get("provider")
+	if provider == "" {
+		provider = "openrouter"
+	}
+	if provider != "openrouter" && provider != "aihubmix" {
+		provider = "openrouter"
+	}
+
+	general, err := ws.store.GetGeneralStats(provider)
 	if err != nil {
 		log.Printf("Failed to get general stats: %v", err)
 		http.Error(w, "Database error loading stats", http.StatusInternalServerError)
 		return
 	}
 
-	modelsStats, err := ws.store.GetModelStats()
+	modelsStats, err := ws.store.GetModelStats(provider)
 	if err != nil {
 		log.Printf("Failed to get model stats: %v", err)
 		http.Error(w, "Database error loading model stats", http.StatusInternalServerError)
 		return
 	}
 
-	keyStats, err := ws.store.GetKeyUsageStats()
+	keyStats, err := ws.store.GetKeyUsageStats(provider)
 	if err != nil {
 		log.Printf("Failed to get key stats: %v", err)
 		http.Error(w, "Database error loading key stats", http.StatusInternalServerError)
 		return
 	}
 
-	topModels := ws.rankingMgr.GetTopModels()
-	freeModels := ws.rankingMgr.GetFreeModels()
+	topModels := []store.DBModel{}
+	freeModels := []store.DBModel{}
+	if provider == "openrouter" {
+		topModels = ws.rankingMgr.GetTopModels()
+		freeModels = ws.rankingMgr.GetFreeModels()
+	}
 
 	data := DashboardData{
 		GeneralStats: general,
@@ -109,6 +123,7 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		FreeModels:   freeModels,
 		RefreshedAt:  time.Now().Format("15:04:05 (02.01.2006)"),
 		Token:        ws.cfg.GatewayToken,
+		Provider:     provider,
 	}
 
 	tmpl, err := template.New("dashboard").Funcs(template.FuncMap{
@@ -167,25 +182,33 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
-	general, err := ws.store.GetGeneralStats()
+	provider := r.URL.Query().Get("provider")
+	if provider != "aihubmix" {
+		provider = "openrouter"
+	}
+
+	general, err := ws.store.GetGeneralStats(provider)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	modelsStats, err := ws.store.GetModelStats()
+	modelsStats, err := ws.store.GetModelStats(provider)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	keyStats, err := ws.store.GetKeyUsageStats()
+	keyStats, err := ws.store.GetKeyUsageStats(provider)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	topModels := ws.rankingMgr.GetTopModels()
+	topModels := []store.DBModel{}
+	if provider == "openrouter" {
+		topModels = ws.rankingMgr.GetTopModels()
+	}
 
 	// Format cooldown durations for JSON response
 	type CustomKeyStats struct {
@@ -283,6 +306,13 @@ func (ws *WebServer) handleKeysAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	provider := r.FormValue("provider")
+	pool, ok := ws.pools[provider]
+	if !ok {
+		http.Error(w, "Unknown provider", http.StatusBadRequest)
+		return
+	}
+
 	rawKeysText := r.FormValue("keys")
 	var rawKeys []string
 	lines := strings.Split(rawKeysText, "\n")
@@ -295,16 +325,16 @@ func (ws *WebServer) handleKeysAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(rawKeys) > 0 {
-		added, err := ws.pool.AddKeys(rawKeys)
+		added, err := pool.AddKeys(rawKeys)
 		if err != nil {
 			log.Printf("Failed to add keys: %v", err)
 			http.Error(w, "Failed to add keys to database", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Added %d new keys via Web GUI", added)
+		log.Printf("Added %d new %s keys via Web GUI", added, provider)
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/?provider="+provider, http.StatusSeeOther)
 }
 
 func (ws *WebServer) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
@@ -324,14 +354,21 @@ func (ws *WebServer) handleKeysDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := ws.pool.RemoveKey(hash); err != nil {
+	provider := r.FormValue("provider")
+	pool, ok := ws.pools[provider]
+	if !ok {
+		http.Error(w, "Unknown provider", http.StatusBadRequest)
+		return
+	}
+
+	if err := pool.RemoveKey(hash); err != nil {
 		log.Printf("Failed to delete key %s: %v", hash, err)
 		http.Error(w, "Failed to delete key from database", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Deleted key hash %s via Web GUI", hash)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	log.Printf("Deleted key hash %s (%s) via Web GUI", hash, provider)
+	http.Redirect(w, r, "/?provider="+provider, http.StatusSeeOther)
 }
 
 func (ws *WebServer) handleKeysBulk(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +397,12 @@ func (ws *WebServer) handleKeysBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	action := r.FormValue("action")
+	provider := r.FormValue("provider")
+	pool, ok := ws.pools[provider]
+	if !ok {
+		http.Error(w, "Unknown provider", http.StatusBadRequest)
+		return
+	}
 	if len(hashes) == 0 || action == "" {
 		http.Error(w, "Missing hashes or action", http.StatusBadRequest)
 		return
@@ -368,14 +411,14 @@ func (ws *WebServer) handleKeysBulk(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch action {
 	case "delete":
-		err = ws.pool.RemoveKeys(hashes)
-		log.Printf("Bulk deleted %d keys via Web GUI", len(hashes))
+		err = pool.RemoveKeys(hashes)
+		log.Printf("Bulk deleted %d %s keys via Web GUI", len(hashes), provider)
 	case "enable":
-		err = ws.pool.UpdateKeysStatus(hashes, "unchecked")
-		log.Printf("Bulk enabled %d keys via Web GUI", len(hashes))
+		err = pool.UpdateKeysStatus(hashes, "unchecked")
+		log.Printf("Bulk enabled %d %s keys via Web GUI", len(hashes), provider)
 	case "disable":
-		err = ws.pool.UpdateKeysStatus(hashes, "disabled")
-		log.Printf("Bulk disabled %d keys via Web GUI", len(hashes))
+		err = pool.UpdateKeysStatus(hashes, "disabled")
+		log.Printf("Bulk disabled %d %s keys via Web GUI", len(hashes), provider)
 	default:
 		http.Error(w, "Unknown action", http.StatusBadRequest)
 		return
@@ -411,6 +454,13 @@ const dashboardTemplate = `
         body { font-family: 'Inter', sans-serif; }
     </style>
     <script>
+        // Provider state: openrouter | aihubmix
+        let currentProvider = "{{.Provider}}";
+
+        function switchProvider(p) {
+            window.location.href = "/?provider=" + p;
+        }
+
         // Global State
         let allKeysData = [
             {{range .KeyStats}}
@@ -480,7 +530,7 @@ const dashboardTemplate = `
                     return; // Don't interrupt when typing keys
                 }
 
-                const res = await fetch('/api/stats');
+                const res = await fetch('/api/stats?provider=' + currentProvider);
                 if (!res.ok) return;
                 const data = await res.json();
 
@@ -920,6 +970,7 @@ const dashboardTemplate = `
                 const formData = new URLSearchParams();
                 hashesArray.forEach(h => formData.append('hashes', h));
                 formData.append('action', action);
+                formData.append('provider', currentProvider);
 
                 const res = await fetch('/keys/bulk', {
                     method: 'POST',
@@ -962,11 +1013,16 @@ const dashboardTemplate = `
             <div class="flex items-center gap-3">
                 <span class="text-2xl">🌐</span>
                 <div>
-                    <h1 class="text-xl font-bold tracking-tight text-white">OpenRouter Free Gateway</h1>
-                    <p class="text-xs text-slate-400">Умный прокси-ротатор • Стек Go & SQLite</p>
+                    <h1 class="text-xl font-bold tracking-tight text-white">LLM Gateway</h1>
+                    <p class="text-xs text-slate-400">OpenRouter + AIHubMix • Go & SQLite</p>
                 </div>
             </div>
             <div class="flex flex-wrap items-center gap-4 text-sm">
+                <!-- Provider Tabs -->
+                <div class="inline-flex rounded-lg overflow-hidden border border-slate-700">
+                    <button onclick="switchProvider('openrouter')" class="px-3 py-1.5 text-xs font-semibold transition {{if eq .Provider "openrouter"}}bg-indigo-600 text-white{{else}}bg-slate-900 text-slate-400 hover:text-white{{end}}">OpenRouter</button>
+                    <button onclick="switchProvider('aihubmix')" class="px-3 py-1.5 text-xs font-semibold transition {{if eq .Provider "aihubmix"}}bg-indigo-600 text-white{{else}}bg-slate-900 text-slate-400 hover:text-white{{end}}">AIHubMix</button>
+                </div>
                 <div class="bg-slate-900 px-3 py-1.5 rounded-md border border-slate-700 text-xs flex items-center gap-2">
                     <span class="text-slate-400">Gateway Token:</span>
                     <code id="token-value" data-token="{{.Token}}" class="text-emerald-400 font-mono">••••••••</code>
@@ -974,7 +1030,7 @@ const dashboardTemplate = `
                     <button id="copy-token-btn" onclick="copyToken()" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold px-2 py-1 rounded transition" title="Скопировать токен">📋 Copy</button>
                 </div>
                 <div class="bg-slate-900 px-3 py-1.5 rounded-md border border-slate-700 text-xs text-slate-400">
-                    Обновлено: <strong id="refreshed-at" class="text-white">{{.RefreshedAt}}</strong> (авто-обновление 5с)
+                    Обновлено: <strong id="refreshed-at" class="text-white">{{.RefreshedAt}}</strong> (авто 5с)
                 </div>
             </div>
         </div>
@@ -1029,6 +1085,7 @@ const dashboardTemplate = `
             </div>
         </div>
 
+        {{if eq .Provider "openrouter"}}
         <!-- Two Columns Layout: Models Top & Usage Stats -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <!-- Left Column: Shir-Man Top Free Models (5 cols) -->
@@ -1166,14 +1223,16 @@ const dashboardTemplate = `
                 </div>
             </details>
         </section>
+        {{end}}
 
         <!-- Add Keys Section -->
         <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm p-5">
             <h2 class="font-bold text-white flex items-center gap-2 mb-3">
-                <span>➕</span> Добавить новые API ключи
+                <span>➕</span> Добавить новые API ключи <span class="text-xs text-slate-400">({{.Provider}})</span>
             </h2>
             <form action="/keys/add" method="POST" class="space-y-3">
-                <textarea id="keys-textarea" name="keys" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm font-mono focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-500" placeholder="Вставьте ключи, каждый с новой строки (пустые строки и комментарии # или // пропускаются)&#10;sk-or-v1-...&#10;sk-or-v1-..."></textarea>
+                <input type="hidden" name="provider" value="{{.Provider}}">
+                <textarea id="keys-textarea" name="keys" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm font-mono focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-500" placeholder="Вставьте ключи, каждый с новой строки (пустые строки и комментарии # или // пропускаются)&#10;sk-...&#10;sk-..."></textarea>
                 <div class="flex justify-end">
                     <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white px-5 py-2 rounded-lg font-semibold text-sm transition">Добавить ключи</button>
                 </div>

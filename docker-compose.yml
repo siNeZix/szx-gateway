@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     ports:
       - "1005:8080"
+      - "1006:8081"
     env_file:
       - .env
     volumes:
