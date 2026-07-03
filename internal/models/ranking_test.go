@@ -118,3 +118,99 @@ func TestRankingManager_FetchFree(t *testing.T) {
 		t.Fatalf("expected 4 persisted free models in sqlite, got %d", len(cachedFromDB))
 	}
 }
+
+func TestRankingManager_FetchAihubmixFree(t *testing.T) {
+	// AIHubMix /v1/models filters available free models by suffix;
+	// /api/v1/models enriches them with context/pricing/capabilities.
+	mockAmResponse := `{
+		"data": [
+			{"id": "gpt-4o-mini", "name": "GPT-4o mini", "owned_by": "OpenAI"},
+			{"id": "gpt-4o-mini-free", "name": "GPT-4o mini Free", "owned_by": "OpenAI"},
+			{"id": "glm-4.7-flash-free", "name": "GLM 4.7 Flash Free", "owned_by": "Z.AI"},
+			{"id": "kimi-for-coding-free", "name": "Kimi for coding Free", "owned_by": "Moonshot AI"},
+			{"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "owned_by": "Google"}
+		]
+	}`
+	mockDetailsResponse := `{
+		"data": [
+			{
+				"model_id": "gpt-4o-mini-free",
+				"desc": "Free GPT-4o mini",
+				"types": "llm",
+				"features": "tools,function_calling",
+				"input_modalities": "text,image",
+				"max_output": 16384,
+				"context_length": 128000,
+				"pricing": {"input": 0, "output": 0}
+			},
+			{
+				"model_id": "glm-4.7-flash-free",
+				"desc": "Free GLM flash",
+				"types": "llm",
+				"features": "thinking",
+				"input_modalities": "text",
+				"max_output": 8192,
+				"context_length": 32000,
+				"pricing": {"input": 0, "output": 0}
+			}
+		]
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if r.URL.Path == "/details" {
+			fmt.Fprintln(w, mockDetailsResponse)
+			return
+		}
+		fmt.Fprintln(w, mockAmResponse)
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_am.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	rm := NewRankingManager(s, 10*time.Minute)
+	rm.aihubmixURL = server.URL
+	rm.aihubmixInfo = server.URL + "/details"
+	rm.openRouterURL = "http://localhost:12345/nonexistent"
+	rm.shirManURL = "http://localhost:12345/nonexistent"
+
+	if err := rm.fetchAihubmixFree(); err != nil {
+		t.Fatalf("fetchAihubmixFree failed: %v", err)
+	}
+
+	free := rm.GetAihubmixFreeModels()
+	if len(free) != 3 {
+		t.Fatalf("expected 3 free models, got %d: %+v", len(free), free)
+	}
+
+	if !rm.IsAihubmixFreeModel("gpt-4o-mini-free") {
+		t.Errorf("IsAihubmixFreeModel should return true for gpt-4o-mini-free")
+	}
+	if free[0].ContextLength != 128000 || free[0].MaxOutput != 16384 || free[0].Features != "tools,function_calling" {
+		t.Errorf("AIHubMix free model details were not cached: %+v", free[0])
+	}
+	if !rm.IsAihubmixFreeModel("glm-4.7-flash-free") {
+		t.Errorf("IsAihubmixFreeModel should return true for glm-4.7-flash-free")
+	}
+	if rm.IsAihubmixFreeModel("gpt-4o-mini") {
+		t.Errorf("IsAihubmixFreeModel should return false for paid gpt-4o-mini")
+	}
+	if rm.IsAihubmixFreeModel("gemini-2.5-flash") {
+		t.Errorf("IsAihubmixFreeModel should return false for paid gemini-2.5-flash")
+	}
+
+	cached, err := s.GetCachedAihubmixFreeModels()
+	if err != nil {
+		t.Fatalf("GetCachedAihubmixFreeModels failed: %v", err)
+	}
+	if len(cached) != 3 {
+		t.Fatalf("expected 3 persisted AIHubMix free models, got %d", len(cached))
+	}
+}

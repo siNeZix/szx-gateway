@@ -113,6 +113,8 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if provider == "openrouter" {
 		topModels = ws.rankingMgr.GetTopModels()
 		freeModels = ws.rankingMgr.GetFreeModels()
+	} else {
+		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
 	}
 
 	data := DashboardData{
@@ -521,6 +523,22 @@ const dashboardTemplate = `
                 btn.innerHTML = '✓';
                 setTimeout(() => { btn.innerHTML = orig; }, 1000);
             });
+        }
+
+        function copyDatasetToClipboard(btn) {
+            copyToClipboard(btn.dataset.copy || '', btn);
+        }
+
+        function copyFreeModelsTable(btn) {
+            const rows = Array.from(document.querySelectorAll('.free-model-row:not(.hidden)'));
+            const lines = [
+                '| id | context | max_output | modalities | features | input_price | output_price |',
+                '| --- | ---: | ---: | --- | --- | ---: | ---: |'
+            ];
+            rows.forEach(row => {
+                lines.push(row.dataset.copyRow || '');
+            });
+            copyToClipboard(lines.join('\n'), btn);
         }
 
         async function updateStats() {
@@ -1164,13 +1182,14 @@ const dashboardTemplate = `
                 </div>
             </section>
         </div>
+        {{end}}
 
         <!-- NEW SECTION: Detailed List of ALL Free Models (Collapsible Accordion) -->
         <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
             <details class="group">
                 <summary class="p-4 bg-slate-850 hover:bg-slate-750 cursor-pointer flex justify-between items-center select-none transition">
                     <h2 class="font-bold text-white flex items-center gap-2.5">
-                        <span>🤖</span> Список всех бесплатных моделей OpenRouter
+                        <span>🤖</span> Список всех бесплатных моделей {{if eq .Provider "aihubmix"}}AIHubMix{{else}}OpenRouter{{end}}
                         <span class="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full font-semibold">
                             <span id="free-models-matched-count">{{len .FreeModels}}</span> из {{len .FreeModels}}
                         </span>
@@ -1183,6 +1202,7 @@ const dashboardTemplate = `
                         <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-500">🔍</span>
                         <input type="text" oninput="filterFreeModels(this.value)" placeholder="Поиск по названию или ID модели..." class="w-full pl-9 bg-slate-900 border border-slate-700 rounded-lg py-2 px-3 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-100 placeholder-slate-500">
                     </div>
+                    <button onclick="copyFreeModelsTable(this)" class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white px-3 py-2 rounded-lg font-semibold text-xs transition">Копировать таблицу для LLM</button>
 
                     <!-- Scrollable table of free models -->
                     <div class="overflow-x-auto max-h-[350px] overflow-y-auto border border-slate-700 rounded-lg">
@@ -1190,14 +1210,19 @@ const dashboardTemplate = `
                             <thead class="bg-slate-900 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700 sticky top-0 z-10">
                                 <tr>
                                     <th class="px-4 py-2.5">Название модели</th>
-                                    <th class="px-4 py-2.5">OpenRouter ID</th>
+                                    <th class="px-4 py-2.5">{{if eq .Provider "aihubmix"}}AIHubMix{{else}}OpenRouter{{end}} ID</th>
                                     <th class="px-4 py-2.5 text-center">Контекст</th>
+                                    <th class="px-4 py-2.5 text-center">Вывод</th>
+                                    <th class="px-4 py-2.5">Возможности</th>
+                                    <th class="px-4 py-2.5 text-center">Цена</th>
+                                    {{if eq .Provider "openrouter"}}
                                     <th class="px-4 py-2.5 text-center w-28">Ссылка</th>
+                                    {{end}}
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-slate-700">
                                 {{range .FreeModels}}
-                                <tr class="free-model-row hover:bg-slate-750/50 transition" data-name="{{.Name}}" data-id="{{.ID}}">
+                                <tr class="free-model-row hover:bg-slate-750/50 transition" data-name="{{.Name}}" data-id="{{.ID}}" data-copy-row="| {{.ID}} | {{.ContextLength}} | {{.MaxOutput}} | {{.Modalities}} | {{.Features}} | ${{.InputPrice}} | ${{.OutputPrice}} |">
                                     <td class="px-4 py-2.5 font-semibold text-white">{{.Name}}</td>
                                     <td class="px-4 py-2.5 font-mono text-xs text-slate-300">
                                         <div class="flex items-center gap-1.5">
@@ -1206,15 +1231,23 @@ const dashboardTemplate = `
                                         </div>
                                     </td>
                                     <td class="px-4 py-2.5 text-center font-mono font-medium text-slate-300">{{divInt .ContextLength 1024}}K</td>
+                                    <td class="px-4 py-2.5 text-center font-mono font-medium text-slate-300">{{divInt .MaxOutput 1024}}K</td>
+                                    <td class="px-4 py-2.5 text-xs text-slate-300">
+                                        <div>{{.Type}} · {{.Modalities}}</div>
+                                        <div class="text-slate-500 max-w-md truncate" title="{{.Description}}">{{.Features}}</div>
+                                    </td>
+                                    <td class="px-4 py-2.5 text-center font-mono text-xs text-emerald-400">${{.InputPrice}} / ${{.OutputPrice}}</td>
+                                    {{if eq $.Provider "openrouter"}}
                                     <td class="px-4 py-2.5 text-center">
                                         <a href="https://openrouter.ai/models/{{.ID}}" target="_blank" rel="noopener" class="inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 hover:underline">
                                             OpenRouter ↗
                                         </a>
                                     </td>
+                                    {{end}}
                                 </tr>
                                 {{else}}
                                 <tr>
-                                    <td colspan="4" class="px-4 py-6 text-center text-slate-400">Список бесплатных моделей пуст.</td>
+                                    <td colspan="{{if eq $.Provider "openrouter"}}7{{else}}6{{end}}" class="px-4 py-6 text-center text-slate-400">Список бесплатных моделей пуст.</td>
                                 </tr>
                                 {{end}}
                             </tbody>
@@ -1223,7 +1256,6 @@ const dashboardTemplate = `
                 </div>
             </details>
         </section>
-        {{end}}
 
         <!-- Add Keys Section -->
         <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm p-5">

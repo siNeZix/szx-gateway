@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +34,36 @@ type OpenRouterModelsResponse struct {
 		Architecture struct {
 			Modality string `json:"modality"`
 		} `json:"architecture"`
+		TopProvider struct {
+			MaxCompletionTokens int64 `json:"max_completion_tokens"`
+		} `json:"top_provider"`
 	} `json:"data"`
+}
+
+type AihubmixModelsResponse struct {
+	Data []struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		OwnedBy string `json:"owned_by"`
+	} `json:"data"`
+}
+
+type AihubmixModelDetailsResponse struct {
+	Data []AihubmixModelDetails `json:"data"`
+}
+
+type AihubmixModelDetails struct {
+	ModelID         string `json:"model_id"`
+	Desc            string `json:"desc"`
+	Types           string `json:"types"`
+	Features        string `json:"features"`
+	InputModalities string `json:"input_modalities"`
+	MaxOutput       int64  `json:"max_output"`
+	ContextLength   int64  `json:"context_length"`
+	Pricing         struct {
+		Input  float64 `json:"input"`
+		Output float64 `json:"output"`
+	} `json:"pricing"`
 }
 
 type RankingManager struct {
@@ -41,11 +72,14 @@ type RankingManager struct {
 
 	shirManURL    string
 	openRouterURL string
+	aihubmixURL   string
+	aihubmixInfo  string
 
-	mu         sync.RWMutex
-	models     []store.DBModel
-	freeModels []store.DBModel
-	fallbackID string
+	mu           sync.RWMutex
+	models       []store.DBModel
+	freeModels   []store.DBModel
+	aihubmixFree []store.DBModel
+	fallbackID   string
 }
 
 func NewRankingManager(s *store.Store, refreshInterval time.Duration) *RankingManager {
@@ -54,6 +88,8 @@ func NewRankingManager(s *store.Store, refreshInterval time.Duration) *RankingMa
 		refreshInt:    refreshInterval,
 		shirManURL:    "https://shir-man.com/api/free-llm/top-models",
 		openRouterURL: "https://openrouter.ai/api/v1/models",
+		aihubmixURL:   "https://aihubmix.com/v1/models",
+		aihubmixInfo:  "https://aihubmix.com/api/v1/models?type=llm",
 		fallbackID:    "openrouter/free",
 	}
 }
@@ -72,6 +108,12 @@ func (rm *RankingManager) Start() {
 		rm.mu.Unlock()
 		log.Printf("Loaded %d free models from database cache", len(cachedFree))
 	}
+	if cachedAm, err := rm.store.GetCachedAihubmixFreeModels(); err == nil && len(cachedAm) > 0 {
+		rm.mu.Lock()
+		rm.aihubmixFree = cachedAm
+		rm.mu.Unlock()
+		log.Printf("Loaded %d AIHubMix free models from database cache", len(cachedAm))
+	}
 
 	// Initial fetch
 	if err := rm.fetch(); err != nil {
@@ -79,6 +121,9 @@ func (rm *RankingManager) Start() {
 	}
 	if err := rm.fetchFree(); err != nil {
 		log.Printf("Initial OpenRouter free models fetch failed: %v", err)
+	}
+	if err := rm.fetchAihubmixFree(); err != nil {
+		log.Printf("Initial AIHubMix free models fetch failed: %v", err)
 	}
 
 	// Periodical background fetch
@@ -91,6 +136,9 @@ func (rm *RankingManager) Start() {
 			}
 			if err := rm.fetchFree(); err != nil {
 				log.Printf("OpenRouter free models fetch failed: %v", err)
+			}
+			if err := rm.fetchAihubmixFree(); err != nil {
+				log.Printf("AIHubMix free models fetch failed: %v", err)
 			}
 		}
 	}()
@@ -170,10 +218,17 @@ func (rm *RankingManager) fetchFree() error {
 		isChat := len(m.Architecture.Modality) > 6 && m.Architecture.Modality[len(m.Architecture.Modality)-6:] == "->text"
 
 		if isFree && isChat {
+			inputPrice, _ := strconv.ParseFloat(m.Pricing.Prompt, 64)
+			outputPrice, _ := strconv.ParseFloat(m.Pricing.Completion, 64)
 			dbModels = append(dbModels, store.DBModel{
 				ID:            m.ID,
 				Name:          m.Name,
 				ContextLength: m.ContextLength,
+				MaxOutput:     m.TopProvider.MaxCompletionTokens,
+				Type:          "llm",
+				Modalities:    m.Architecture.Modality,
+				InputPrice:    inputPrice,
+				OutputPrice:   outputPrice,
 				UpdatedAt:     now,
 			})
 		}
@@ -195,6 +250,94 @@ func (rm *RankingManager) fetchFree() error {
 
 	log.Printf("Updated OpenRouter free models cache. Total free models: %d", len(dbModels))
 	return nil
+}
+
+// fetchAihubmixFree pulls the AIHubMix public /v1/models list and keeps only
+// entries whose ID ends with "-free". The endpoint has no pricing/modality
+// fields, so the suffix is the only signal. Public, no key required.
+func (rm *RankingManager) fetchAihubmixFree() error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	details, err := rm.fetchAihubmixModelDetails(client)
+	if err != nil {
+		log.Printf("AIHubMix model details fetch failed: %v", err)
+	}
+
+	resp, err := client.Get(rm.aihubmixURL)
+	if err != nil {
+		return fmt.Errorf("failed to make HTTP request to AIHubMix API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad HTTP status from AIHubMix API: %s", resp.Status)
+	}
+
+	var data AihubmixModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return fmt.Errorf("failed to decode AIHubMix models: %w", err)
+	}
+
+	var dbModels []store.DBModel
+	now := time.Now()
+	for _, m := range data.Data {
+		// ponytail: AIHubMix /v1/models has no pricing field; "-free" suffix is
+		// the only free signal. Falls over if AIHubMix ships a free model
+		// without the suffix; add a name/pricing check then.
+		if strings.HasSuffix(m.ID, "-free") {
+			d := details[m.ID]
+			dbModels = append(dbModels, store.DBModel{
+				ID:            m.ID,
+				Name:          m.ID,
+				ContextLength: d.ContextLength,
+				MaxOutput:     d.MaxOutput,
+				Type:          d.Types,
+				Features:      d.Features,
+				Modalities:    d.InputModalities,
+				InputPrice:    d.Pricing.Input,
+				OutputPrice:   d.Pricing.Output,
+				Description:   d.Desc,
+				UpdatedAt:     now,
+			})
+		}
+	}
+
+	if len(dbModels) == 0 {
+		return fmt.Errorf("AIHubMix API returned 0 free models")
+	}
+
+	rm.mu.Lock()
+	rm.aihubmixFree = dbModels
+	rm.mu.Unlock()
+
+	if err := rm.store.CacheAihubmixFreeModels(dbModels); err != nil {
+		log.Printf("Failed to cache AIHubMix free models in DB: %v", err)
+	}
+
+	log.Printf("Updated AIHubMix free models cache. Total free models: %d", len(dbModels))
+	return nil
+}
+
+func (rm *RankingManager) fetchAihubmixModelDetails(client *http.Client) (map[string]AihubmixModelDetails, error) {
+	resp, err := client.Get(rm.aihubmixInfo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make HTTP request to AIHubMix models API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bad HTTP status from AIHubMix models API: %s", resp.Status)
+	}
+
+	var data AihubmixModelDetailsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to decode AIHubMix model details: %w", err)
+	}
+
+	res := make(map[string]AihubmixModelDetails, len(data.Data))
+	for _, m := range data.Data {
+		res[m.ModelID] = m
+	}
+	return res, nil
 }
 
 func (rm *RankingManager) ResolveAlias(alias string) (string, bool) {
@@ -256,5 +399,26 @@ func (rm *RankingManager) GetFreeModels() []store.DBModel {
 
 	res := make([]store.DBModel, len(rm.freeModels))
 	copy(res, rm.freeModels)
+	return res
+}
+
+func (rm *RankingManager) IsAihubmixFreeModel(modelID string) bool {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	for _, m := range rm.aihubmixFree {
+		if m.ID == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+func (rm *RankingManager) GetAihubmixFreeModels() []store.DBModel {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	res := make([]store.DBModel, len(rm.aihubmixFree))
+	copy(res, rm.aihubmixFree)
 	return res
 }

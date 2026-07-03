@@ -63,6 +63,13 @@ type DBModel struct {
 	Name          string
 	Rank          int
 	ContextLength int64
+	MaxOutput     int64
+	Type          string
+	Features      string
+	Modalities    string
+	InputPrice    float64
+	OutputPrice   float64
+	Description   string
 	UpdatedAt     time.Time
 }
 
@@ -160,6 +167,26 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			context_length INTEGER NOT NULL,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			type TEXT NOT NULL DEFAULT '',
+			features TEXT NOT NULL DEFAULT '',
+			modalities TEXT NOT NULL DEFAULT '',
+			input_price REAL NOT NULL DEFAULT 0,
+			output_price REAL NOT NULL DEFAULT 0,
+			description TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS aihubmix_free_models_cache (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			context_length INTEGER NOT NULL DEFAULT 0,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			type TEXT NOT NULL DEFAULT '',
+			features TEXT NOT NULL DEFAULT '',
+			modalities TEXT NOT NULL DEFAULT '',
+			input_price REAL NOT NULL DEFAULT 0,
+			output_price REAL NOT NULL DEFAULT 0,
+			description TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL
 		);`,
 	}
@@ -177,6 +204,21 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN is_stream INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN max_output INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN type TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN features TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN modalities TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN input_price REAL NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN output_price REAL NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE free_models_cache ADD COLUMN description TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN context_length INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN max_output INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN type TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN features TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN modalities TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN input_price REAL NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN output_price REAL NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN description TEXT NOT NULL DEFAULT '';`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_keys_provider ON keys(provider);`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);`)
 
@@ -411,8 +453,8 @@ func (s *Store) CacheFreeModels(models []DBModel) error {
 	}
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO free_models_cache (id, name, context_length, updated_at)
-		VALUES (?, ?, ?, ?)
+		INSERT INTO free_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -420,7 +462,7 @@ func (s *Store) CacheFreeModels(models []DBModel) error {
 	defer stmt.Close()
 
 	for _, m := range models {
-		_, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.UpdatedAt)
+		_, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.Description, m.UpdatedAt)
 		if err != nil {
 			return err
 		}
@@ -430,7 +472,7 @@ func (s *Store) CacheFreeModels(models []DBModel) error {
 }
 
 func (s *Store) GetCachedFreeModels() ([]DBModel, error) {
-	rows, err := s.db.Query(`SELECT id, name, context_length, updated_at FROM free_models_cache ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM free_models_cache ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -439,8 +481,52 @@ func (s *Store) GetCachedFreeModels() ([]DBModel, error) {
 	var res []DBModel
 	for rows.Next() {
 		m := DBModel{}
-		err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.UpdatedAt)
+		err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.Description, &m.UpdatedAt)
 		if err != nil {
+			return nil, err
+		}
+		res = append(res, m)
+	}
+	return res, nil
+}
+
+func (s *Store) CacheAihubmixFreeModels(models []DBModel) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("DELETE FROM aihubmix_free_models_cache")
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO aihubmix_free_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, m := range models {
+		if _, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.Description, m.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetCachedAihubmixFreeModels() ([]DBModel, error) {
+	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM aihubmix_free_models_cache ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []DBModel
+	for rows.Next() {
+		m := DBModel{}
+		if err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.Description, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		res = append(res, m)
