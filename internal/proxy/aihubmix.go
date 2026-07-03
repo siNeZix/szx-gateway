@@ -13,6 +13,7 @@ import (
 
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
+	"openrouter-gateway/internal/models"
 	"openrouter-gateway/internal/store"
 )
 
@@ -35,18 +36,20 @@ var (
 )
 
 type AihubmixHandler struct {
-	cfg    *config.Config
-	store  *store.Store
-	pool   *keys.KeyPool
-	client *http.Client
+	cfg        *config.Config
+	store      *store.Store
+	pool       *keys.KeyPool
+	rankingMgr *models.RankingManager
+	client     *http.Client
 }
 
-func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool) *AihubmixHandler {
+func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager) *AihubmixHandler {
 	return &AihubmixHandler{
-		cfg:    cfg,
-		store:  s,
-		pool:   p,
-		client: &http.Client{Timeout: 10 * time.Minute},
+		cfg:        cfg,
+		store:      s,
+		pool:       p,
+		rankingMgr: rm,
+		client:     &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -70,12 +73,6 @@ func (h *AihubmixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ponytail: /v1/models проксируется напрямую без ключа (public endpoint).
-	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
-		h.proxyPassthrough(w, r, nil, "")
-		return
-	}
-
 	h.proxyWithRetry(w, r)
 }
 
@@ -86,6 +83,19 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	r.Body.Close()
+
+	// На /chat/completions проверяем, что запрошенная модель — free из кэша AIHubMix.
+	if strings.Contains(r.URL.Path, "/chat/completions") && strings.Contains(r.Header.Get("Content-Type"), "json") {
+		var peek struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(bodyBytes, &peek); err == nil && peek.Model != "" {
+			if !h.rankingMgr.IsAihubmixFreeModel(peek.Model) {
+				http.Error(w, fmt.Sprintf(`{"error":{"message":"Model %s is not supported (only AIHubMix free models allowed)"}}`, peek.Model), http.StatusBadRequest)
+				return
+			}
+		}
+	}
 
 	// reasoning-fix: на /chat/completions при наличии tools вырезаем reasoning-параметры,
 	// иначе gpt-5.5 кидает "Function tools with reasoning_effort are not supported".
@@ -151,7 +161,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		if resp.StatusCode == 200 && containsAny(firstBytes, aihubmixQuotaMarkers) {
 			resp.Body.Close()
 			log.Printf("[AIHubMix] key %s free-quota exhausted (10/acc)", keyState.MaskedKey)
-			keyState.SetStatus("day_exhausted")
+			keyState.MarkDayExhausted()
 			h.pool.SyncKeyToDB(keyState)
 			continue
 		}
@@ -198,26 +208,6 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 
 	log.Printf("[AIHubMix] all %d retries failed: %v", h.cfg.MaxKeyRetries, finalErr)
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"AIHubMix gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
-}
-
-// proxyPassthrough — для /v1/models (public endpoint, без ключа и без retry)
-func (h *AihubmixHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, _ *keys.KeyState, _ string) {
-	targetURL := aihubmixTarget + r.URL.Path
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
-	if err != nil {
-		http.Error(w, `{"error":{"message":"Internal gateway error"}}`, http.StatusInternalServerError)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+h.cfg.GatewayToken)
-	resp, err := h.client.Do(req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"upstream error: %v"}}`, err), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
 }
 
 func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, path string, startTime time.Time, recordSuccess bool) {
