@@ -138,6 +138,24 @@ func TestReserveAtMaxLimitMarksDayExhausted(t *testing.T) {
 	}
 }
 
+func TestRollbackUsageReactivatesExhaustedKey(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 9
+	if !ks.TryReserve(time.Now()) {
+		t.Fatal("10th request should pass")
+	}
+
+	ks.RollbackUsage()
+
+	if ks.UsageToday != 9 {
+		t.Fatalf("UsageToday = %d, want 9", ks.UsageToday)
+	}
+	if ks.Status != "active" {
+		t.Fatalf("status = %s, want active", ks.Status)
+	}
+}
+
 func TestReserveModelAtMaxLimitMarksDayExhausted(t *testing.T) {
 	ks := newState(20)
 	ks.MaxLimit = 10

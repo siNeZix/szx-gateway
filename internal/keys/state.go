@@ -217,6 +217,17 @@ func (ks *KeyState) RegisterRequest(now time.Time) {
 	ks.registerLocked(now)
 }
 
+func (ks *KeyState) RollbackUsage() {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	if ks.UsageToday > 0 {
+		ks.UsageToday--
+	}
+	if ks.Status == "day_exhausted" && (ks.MaxLimit <= 0 || ks.UsageToday < ks.MaxLimit) {
+		ks.Status = "active"
+	}
+}
+
 // registerLocked performs the request accounting. Caller holds ks.mu.
 func (ks *KeyState) registerLocked(now time.Time) {
 	ks.ResetDailyUsageIfNewDay()
