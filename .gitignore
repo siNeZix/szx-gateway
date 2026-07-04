@@ -17,6 +17,10 @@
 accounts/api_keys.txt
 .env
 
+# Worktrees
+/.worktrees/
+.opencode/
+
 # OS/IDEs
 .idea/
 .vscode/
