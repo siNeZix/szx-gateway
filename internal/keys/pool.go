@@ -130,6 +130,10 @@ func (kp *KeyPool) UpdateKeysStatus(hashes []string, status string) error {
 // reserves it (registers the request) before returning, so two concurrent
 // callers can never hand out the same slot and overrun the per-key minute limit.
 func (kp *KeyPool) GetBestKey() (*KeyState, error) {
+	return kp.GetBestKeyExcluding(nil)
+}
+
+func (kp *KeyPool) GetBestKeyExcluding(exclude map[string]bool) (*KeyState, error) {
 	kp.mu.RLock()
 	defer kp.mu.RUnlock()
 
@@ -146,6 +150,9 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 		var best *KeyState
 		var bestUsage int64
 		for _, k := range kp.keys {
+			if exclude != nil && exclude[k.KeyHash] {
+				continue
+			}
 			if tried[k] || !k.CanUse(now) {
 				continue
 			}
@@ -170,6 +177,10 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 }
 
 func (kp *KeyPool) GetBestKeyForModel(model string) (*KeyState, error) {
+	return kp.GetBestKeyForModelExcluding(model, nil)
+}
+
+func (kp *KeyPool) GetBestKeyForModelExcluding(model string, exclude map[string]bool) (*KeyState, error) {
 	kp.mu.RLock()
 	defer kp.mu.RUnlock()
 
@@ -187,6 +198,9 @@ func (kp *KeyPool) GetBestKeyForModel(model string) (*KeyState, error) {
 		var best *KeyState
 		var bestUsage int64
 		for _, k := range kp.keys {
+			if exclude != nil && exclude[k.KeyHash] {
+				continue
+			}
 			if tried[k] || !k.CanUseModel(now, model) {
 				continue
 			}

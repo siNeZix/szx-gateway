@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"openrouter-gateway/internal/config"
@@ -18,6 +19,7 @@ import (
 )
 
 const aihubmixTarget = "https://aihubmix.com"
+const aihubmixMaxKeySwitches = 12
 
 var (
 	aihubmixQuotaMarkers  = []string{"prevent abuse of free resources", "can only try"}
@@ -35,6 +37,14 @@ var (
 		"insufficient_user_quota", "balance is insufficient", "insufficient balance",
 		"recharge", "account suspended", "approved ip ranges",
 	}
+	aihubmixKeyRateMarkers = []string{
+		"rate_limit_error", "rate limit", "rate-limit", "rate limited", "too many requests",
+		"requests per", "quota exceeded", "key limit", "account limit",
+	}
+	aihubmixProvider429Markers = []string{
+		"rate limited by provider", "provider rate", "model too many requests", "model overloaded",
+		"model is overloaded", "overloaded", "temporarily rate-limited", "temporarily rate limited",
+	}
 	aihubmixKeyModelMarkers = []string{
 		"not authorized to access the requested model", "not authorized to access",
 	}
@@ -47,7 +57,10 @@ const (
 	aihubmixReturnToClient aihubmixErrorAction = iota
 	aihubmixRetryInvalidKey
 	aihubmixRetryAccountLimit
+	aihubmixRetryKeyRateLimit
+	aihubmixRetryProviderOnce
 	aihubmixRetryKeyModelLimit
+	aihubmixRetryTransient
 )
 
 type AihubmixHandler struct {
@@ -56,6 +69,9 @@ type AihubmixHandler struct {
 	pool       *keys.KeyPool
 	rankingMgr *models.RankingManager
 	client     *http.Client
+	rate429Mu  sync.Mutex
+	rate429    map[string]int
+	rate429Day string
 }
 
 func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager) *AihubmixHandler {
@@ -65,6 +81,7 @@ func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm 
 		pool:       p,
 		rankingMgr: rm,
 		client:     &http.Client{Timeout: 10 * time.Minute},
+		rate429:    make(map[string]int),
 	}
 }
 
@@ -168,22 +185,29 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	maxAttempts := h.cfg.MaxKeyRetries
+	if maxAttempts <= 0 || maxAttempts > aihubmixMaxKeySwitches {
+		maxAttempts = aihubmixMaxKeySwitches
+	}
+	provider429Retries := 0
+	triedKeys := make(map[string]bool)
 	var finalErr error
-	for attempt := 1; attempt <= h.cfg.MaxKeyRetries; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		var keyState *keys.KeyState
 		var err error
 		if modelForLimits != "" {
-			keyState, err = h.pool.GetBestKeyForModel(modelForLimits)
+			keyState, err = h.pool.GetBestKeyForModelExcluding(modelForLimits, triedKeys)
 		} else {
-			keyState, err = h.pool.GetBestKey()
+			keyState, err = h.pool.GetBestKeyExcluding(triedKeys)
 		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":{"message":"%v"}}`, err), http.StatusServiceUnavailable)
 			return
 		}
+		triedKeys[keyState.KeyHash] = true
 		h.pool.SyncKeyToDB(keyState)
 
-		log.Printf("[AIHubMix %d/%d] %s %s via key %s", attempt, h.cfg.MaxKeyRetries, r.Method, r.URL.Path, keyState.MaskedKey)
+		log.Printf("[AIHubMix %d/%d] %s %s via key %s", attempt, maxAttempts, r.Method, r.URL.Path, keyState.MaskedKey)
 
 		targetURL := aihubmixTarget + r.URL.Path
 		if r.URL.RawQuery != "" {
@@ -219,7 +243,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 
 		// 1) free-квота исчерпана: HTTP 200 с заглушкой "...prevent abuse... can only try..."
-		if resp.StatusCode == 200 && containsAny(firstBytes, aihubmixQuotaMarkers) {
+		if resp.StatusCode == 200 && containsAnyLower(firstBytes, aihubmixQuotaMarkers) {
 			resp.Body.Close()
 			log.Printf("[AIHubMix] key %s free-quota exhausted (account daily limit reached)", keyState.MaskedKey)
 			// ponytail: лимит 10 запросов — на аккаунт, не на модель. Морозим весь ключ до конца суток.
@@ -245,6 +269,29 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("key/account limit with status %d", resp.StatusCode)
 				continue
+			case aihubmixRetryKeyRateLimit:
+				resp.Body.Close()
+				cooldown := h.nextAIHubMix429Cooldown(keyState)
+				log.Printf("[AIHubMix] key %s rate-limited for %s (status %d), trying next key", keyState.MaskedKey, cooldown, resp.StatusCode)
+				keyState.SetCooldown(cooldown, "rate_limited")
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("key rate-limited with status %d", resp.StatusCode)
+				continue
+			case aihubmixRetryProviderOnce:
+				if provider429Retries > 0 {
+					log.Printf("[AIHubMix] provider/model 429 repeated, returning upstream response")
+					keyState.RollbackUsage()
+					h.pool.SyncKeyToDB(keyState)
+					h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true)
+					return
+				}
+				resp.Body.Close()
+				provider429Retries++
+				log.Printf("[AIHubMix] provider/model 429, trying another key once")
+				keyState.RollbackUsage()
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("provider/model rate-limited with status %d", resp.StatusCode)
+				continue
 			case aihubmixRetryKeyModelLimit:
 				resp.Body.Close()
 				log.Printf("[AIHubMix] key %s cannot use model %s (status %d), trying next key", keyState.MaskedKey, modelForLimits, resp.StatusCode)
@@ -254,6 +301,13 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("key/model limit with status %d", resp.StatusCode)
 				continue
+			case aihubmixRetryTransient:
+				resp.Body.Close()
+				log.Printf("[AIHubMix] key %s transient upstream error (status %d), trying next key", keyState.MaskedKey, resp.StatusCode)
+				keyState.SetCooldown(30*time.Second, "")
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("transient upstream error with status %d", resp.StatusCode)
+				continue
 			default:
 				log.Printf("[AIHubMix] %d model/provider/request error (key NOT banned)", resp.StatusCode)
 				keyState.RollbackUsage()
@@ -262,16 +316,6 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		}
-
-		// 3) ключ мёртв без структурированного тела
-		if isKeyDead(resp.StatusCode, firstBytes) {
-			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s dead (status %d)", keyState.MaskedKey, resp.StatusCode)
-			keyState.SetStatus("invalid")
-			h.pool.SyncKeyToDB(keyState)
-			continue
-		}
-
 		// 6) успех или прочий статус — релеим как есть
 		logModel := modelForLimits
 		if logModel == "" {
@@ -281,8 +325,30 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("[AIHubMix] all %d retries failed: %v", h.cfg.MaxKeyRetries, finalErr)
+	log.Printf("[AIHubMix] all %d retries failed: %v", maxAttempts, finalErr)
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"AIHubMix gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
+}
+
+func (h *AihubmixHandler) nextAIHubMix429Cooldown(ks *keys.KeyState) time.Duration {
+	h.rate429Mu.Lock()
+	defer h.rate429Mu.Unlock()
+
+	now := time.Now().UTC()
+	day := now.Format("2006-01-02")
+	if h.rate429Day != day {
+		h.rate429 = make(map[string]int)
+		h.rate429Day = day
+	}
+
+	h.rate429[ks.KeyHash]++
+	switch h.rate429[ks.KeyHash] {
+	case 1:
+		return time.Minute
+	case 2:
+		return time.Hour
+	default:
+		return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC).Sub(now)
+	}
 }
 
 func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, model string, startTime time.Time, ttftMs int64, isStream, recordRequest bool) {
@@ -431,20 +497,54 @@ func isKeyDead(status int, data []byte) bool {
 }
 
 func classifyAIHubMixError(status int, data []byte) aihubmixErrorAction {
+	text := strings.ToLower(string(data))
+	var gwErr struct {
+		Error struct {
+			Message string      `json:"message"`
+			Type    string      `json:"type"`
+			Param   string      `json:"param"`
+			Code    interface{} `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &gwErr) == nil {
+		text = strings.ToLower(fmt.Sprintf("%s %s %s %v", gwErr.Error.Message, gwErr.Error.Type, gwErr.Error.Param, gwErr.Error.Code))
+	}
+
+	has := func(markers []string) bool {
+		for _, m := range markers {
+			if strings.Contains(text, m) {
+				return true
+			}
+		}
+		return false
+	}
+
 	if isKeyDead(status, data) {
 		return aihubmixRetryInvalidKey
 	}
-	if containsAnyLower(data, aihubmixKeyModelMarkers) {
+	if has(aihubmixKeyModelMarkers) {
 		return aihubmixRetryKeyModelLimit
 	}
-	if containsAnyLower(data, aihubmixAccountMarkers) {
+	if has(aihubmixAccountMarkers) {
 		return aihubmixRetryAccountLimit
 	}
-	if containsAnyLower(data, aihubmixReturnMarkers) {
+	if status == http.StatusTooManyRequests {
+		if has(aihubmixProvider429Markers) {
+			return aihubmixRetryProviderOnce
+		}
+		if has(aihubmixKeyRateMarkers) {
+			return aihubmixRetryKeyRateLimit
+		}
+		return aihubmixRetryKeyRateLimit
+	}
+	if has(aihubmixReturnMarkers) {
 		return aihubmixReturnToClient
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return aihubmixRetryInvalidKey
+	}
+	if status >= 500 {
+		return aihubmixRetryTransient
 	}
 	return aihubmixReturnToClient
 }

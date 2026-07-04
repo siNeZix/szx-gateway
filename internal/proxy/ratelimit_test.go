@@ -37,13 +37,17 @@ func TestClassifyAIHubMixError(t *testing.T) {
 		body   string
 		want   aihubmixErrorAction
 	}{
-		{"provider rate limit", 429, `{"error":{"message":"[429]: Model coding-glm-5.2-free rate limited by provider – contact support to request higher concurrency or try again later. (tid: 1)"}}`, aihubmixReturnToClient},
-		{"model too many requests", 429, `{"error":{"message":"The coding-glm-5.2-free model Too many requests; please try again later."}}`, aihubmixReturnToClient},
+		{"provider 429", 429, `{"error":{"message":"[429]: Model coding-glm-5.2-free rate limited by provider – contact support to request higher concurrency or try again later. (tid: 1)"}}`, aihubmixRetryProviderOnce},
+		{"model too many requests", 429, `{"error":{"message":"The coding-glm-5.2-free model Too many requests; please try again later."}}`, aihubmixRetryProviderOnce},
+		{"key 429", 429, `{"error":{"type":"rate_limit_error","message":"You have exceeded your request rate."}}`, aihubmixRetryKeyRateLimit},
+		{"bare 429", 429, `{"error":{"message":"Too many requests"}}`, aihubmixRetryKeyRateLimit},
 		{"no channel", 503, `{"error":{"message":"No available channel for this model"}}`, aihubmixReturnToClient},
+		{"plain 5xx", 503, `{"error":{"message":"upstream timeout"}}`, aihubmixRetryTransient},
 		{"bad model", 503, `{"error":{"message":"Incorrect model ID. Please request to view the model page or you do not have permission to use this model"}}`, aihubmixReturnToClient},
 		{"invalid token", 401, `{"error":{"message":"Unauthorized – access token is invalid or expired."}}`, aihubmixRetryInvalidKey},
 		{"disabled key", 403, `{"error":{"message":"key is disabled"}}`, aihubmixRetryInvalidKey},
 		{"quota", 403, `{"error":{"code":"insufficient_user_quota","message":"Your account balance is insufficient. Please recharge your account."}}`, aihubmixRetryAccountLimit},
+		{"numeric quota code", 429, `{"error":{"code":429,"message":"Account rate limit exceeded"}}`, aihubmixRetryKeyRateLimit},
 		{"key model", 403, `{"error":{"message":"Forbidden – key abc123 not authorized to access the requested model."}}`, aihubmixRetryKeyModelLimit},
 	}
 
@@ -53,5 +57,12 @@ func TestClassifyAIHubMixError(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAIHubMixQuotaMarkerIsCaseInsensitive(t *testing.T) {
+	body := []byte("Prevent abuse of free resources: you can only try 10 times")
+	if !containsAnyLower(body, aihubmixQuotaMarkers) {
+		t.Fatal("expected free-quota marker match")
 	}
 }
