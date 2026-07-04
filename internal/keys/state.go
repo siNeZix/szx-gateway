@@ -72,16 +72,14 @@ func (ks *KeyState) ToDB() *store.DBKey {
 	}
 }
 
-// ResetDailyUsageIfNewDay resets usage_today if the calendar day has changed
+// ResetDailyUsageIfNewDay сбрасывает usage_today при смене UTC-дня.
 func (ks *KeyState) ResetDailyUsageIfNewDay() bool {
 	if ks.LastUsedAt.IsZero() {
 		return false
 	}
 
-	now := time.Now()
-	// Compare year, month, and day in local timezone
-	y1, m1, d1 := ks.LastUsedAt.Date()
-	y2, m2, d2 := now.Date()
+	y1, m1, d1 := ks.LastUsedAt.UTC().Date()
+	y2, m2, d2 := time.Now().UTC().Date()
 
 	if y1 != y2 || m1 != m2 || d1 != d2 {
 		ks.UsageToday = 0
@@ -115,11 +113,6 @@ func (ks *KeyState) usable(now time.Time) bool {
 	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" {
 		return false
 	}
-	// ponytail: превентивная блокировка по дневному free-лимиту (MaxLimit).
-	// Для AIHubMix MaxLimit=10: ключ не выдаётся на 10-м запросе, не дожидаясь
-	// 11-го с 200-заглушкой. Статус НЕ меняется — day_exhausted ставится только
-	// при детекте заглушки (MarkDayExhausted), чтобы fallback в GetBestKey мог
-	// сделать диагностический 11-й запрос. Сбрасывается по суткам.
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
 		return false
 	}
@@ -203,7 +196,9 @@ func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
 	ks.ModelRequestTimes[model] = append(times, now)
 	ks.UsageToday++
 	ks.LastUsedAt = now
-	if ks.Status == "unchecked" || ks.Status == "rate_limited" {
+	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
+		ks.Status = "day_exhausted"
+	} else if ks.Status == "unchecked" || ks.Status == "rate_limited" {
 		ks.Status = "active"
 	}
 	return true
@@ -233,8 +228,9 @@ func (ks *KeyState) registerLocked(now time.Time) {
 	ks.LastUsedAt = now
 	ks.RequestTimes = append(ks.RequestTimes, now)
 
-	// Optimistically assume active if it was unchecked or rate_limited (and cooldown is over)
-	if ks.Status == "unchecked" || ks.Status == "rate_limited" {
+	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
+		ks.Status = "day_exhausted"
+	} else if ks.Status == "unchecked" || ks.Status == "rate_limited" {
 		ks.Status = "active"
 	}
 }

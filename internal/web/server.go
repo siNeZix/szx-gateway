@@ -163,7 +163,13 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			if t.IsZero() || t.Unix() <= 0 {
 				return "never"
 			}
-			return t.Format("15:04:05")
+			return t.Local().Format("15:04:05")
+		},
+		"unixMilli": func(t time.Time) int64 {
+			if t.IsZero() || t.Unix() <= 0 {
+				return 0
+			}
+			return t.UnixMilli()
 		},
 		"truncateModel": func(m string) string {
 			parts := strings.Split(m, "/")
@@ -243,6 +249,7 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		ErrorRequests int64  `json:"error_requests"`
 		CooldownLeft  string `json:"cooldown_left"`
 		FormattedLast string `json:"formatted_last"`
+		LastUsedAt    int64  `json:"last_used_at"`
 	}
 
 	customKeys := make([]CustomKeyStats, len(keyStats))
@@ -252,8 +259,10 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 			left = time.Until(k.CooldownUntil).Truncate(time.Second).String()
 		}
 		formattedLast := "never"
-		if !k.CooldownUntil.IsZero() && k.CooldownUntil.Unix() > 0 {
-			formattedLast = k.CooldownUntil.Format("15:04:05")
+		lastUsedAt := int64(0)
+		if !k.LastUsedAt.IsZero() && k.LastUsedAt.Unix() > 0 {
+			formattedLast = k.LastUsedAt.Local().Format("15:04:05")
+			lastUsedAt = k.LastUsedAt.UnixMilli()
 		}
 		customKeys[i] = CustomKeyStats{
 			MaskedKey:     k.MaskedKey,
@@ -265,6 +274,7 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 			ErrorRequests: k.ErrorRequests,
 			CooldownLeft:  left,
 			FormattedLast: formattedLast,
+			LastUsedAt:    lastUsedAt,
 		}
 	}
 
@@ -290,6 +300,7 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 
 	type CustomModelStats struct {
 		Model         string `json:"model"`
+		TodayRequests int64  `json:"today_requests"`
 		TotalRequests int64  `json:"total_requests"`
 		AvgLatencyMs  int64  `json:"avg_latency_ms"`
 		TotalTokens   int64  `json:"total_tokens"`
@@ -299,6 +310,7 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	for i, m := range modelsStats {
 		customModels[i] = CustomModelStats{
 			Model:         m.Model,
+			TodayRequests: m.TodayRequests,
 			TotalRequests: m.TotalRequests,
 			AvgLatencyMs:  m.AvgLatencyMs,
 			TotalTokens:   m.TotalTokens,
@@ -496,7 +508,8 @@ const dashboardTemplate = `
                 total_requests: {{.TotalRequests}},
                 error_requests: {{.ErrorRequests}},
                 cooldown_left: "{{cooldownLeft .CooldownUntil}}",
-                formatted_last: "{{formatTime .CooldownUntil}}"
+                formatted_last: "{{formatTime .LastUsedAt}}",
+                last_used_at: {{unixMilli .LastUsedAt}}
             },
             {{end}}
         ];
@@ -562,6 +575,10 @@ const dashboardTemplate = `
             copyToClipboard(lines.join('\n'), btn);
         }
 
+        function formatLocalTime(ms) {
+            return ms > 0 ? new Date(ms).toLocaleTimeString() : 'never';
+        }
+
         async function updateStats() {
             try {
                 const textarea = document.getElementById('keys-textarea');
@@ -606,19 +623,20 @@ const dashboardTemplate = `
                             const modelShort = m.model.split('/').pop() || m.model;
                             return "" +
                                "<tr class=\"hover:bg-slate-750 transition\">" +
-                                   "<td class=\"px-4 py-3 font-semibold text-white\">" +
-                                       modelShort +
-                                       "<span class=\"block text-[10px] font-mono text-slate-500 font-normal mt-0.5\">" + m.model + "</span>" +
-                                   "</td>" +
-                                   "<td class=\"px-4 py-3 text-center text-slate-300 font-mono font-medium\">" + m.total_requests + "</td>" +
-                                   "<td class=\"px-4 py-3 text-center text-amber-400 font-mono\">" + m.avg_latency_ms + " ms</td>" +
-                                   "<td class=\"px-4 py-3 text-center text-slate-400 font-mono\">" + m.total_tokens + "</td>" +
+                                    "<td class=\"px-4 py-3 font-semibold text-white\">" +
+                                        modelShort +
+                                        "<span class=\"block text-[10px] font-mono text-slate-500 font-normal mt-0.5\">" + m.model + "</span>" +
+                                    "</td>" +
+                                    "<td class=\"px-4 py-3 text-center text-emerald-400 font-mono font-medium\">" + m.today_requests + "</td>" +
+                                    "<td class=\"px-4 py-3 text-center text-slate-300 font-mono font-medium\">" + m.total_requests + "</td>" +
+                                    "<td class=\"px-4 py-3 text-center text-amber-400 font-mono\">" + m.avg_latency_ms + " ms</td>" +
+                                    "<td class=\"px-4 py-3 text-center text-slate-400 font-mono\">" + m.total_tokens + "</td>" +
                                "</tr>";
                         }).join('');
                     } else {
                         modelBody.innerHTML = "" +
                             "<tr>" +
-                                "<td colspan=\"4\" class=\"px-4 py-8 text-center text-slate-400\">Лог запросов пуст. Сделайте первый запрос через прокси!</td>" +
+                                "<td colspan=\"5\" class=\"px-4 py-8 text-center text-slate-400\">Лог запросов пуст. Сделайте первый запрос через прокси!</td>" +
                             "</tr>";
                     }
                 }
@@ -751,14 +769,15 @@ const dashboardTemplate = `
                         valB = b.cooldown_left || '';
                         break;
                     case 'last_used':
-                        valA = a.formatted_last || '';
-                        valB = b.formatted_last || '';
+                        valA = Number(a.last_used_at || 0);
+                        valB = Number(b.last_used_at || 0);
                         break;
                     default:
                         valA = Number(a.today_usage);
                         valB = Number(b.today_usage);
                 }
 
+                if (sortCol === 'last_used' && (valA === 0 || valB === 0) && valA !== valB) return valA === 0 ? 1 : -1;
                 if (valA < valB) return sortOrder === 'asc' ? -1 : 1;
                 if (valA > valB) return sortOrder === 'asc' ? 1 : -1;
                 return 0;
@@ -841,7 +860,7 @@ const dashboardTemplate = `
                                 (k.cooldown_left || '') +
                             '</td>' +
                             '<td class="px-4 py-3 text-center text-xs text-slate-400">' +
-                                (k.formatted_last || 'never') +
+                                formatLocalTime(Number(k.last_used_at || 0)) +
                             '</td>' +
                             '<td class="px-4 py-3 text-center">' +
                                 '<div class="flex items-center justify-center gap-1.5">' +
@@ -1238,6 +1257,7 @@ const dashboardTemplate = `
                         <thead class="bg-slate-900 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700">
                             <tr>
                                 <th class="px-4 py-3">Модель</th>
+                                <th class="px-4 py-3 text-center">Сегодня</th>
                                 <th class="px-4 py-3 text-center">Запросы</th>
                                 <th class="px-4 py-3 text-center">Ср. задержка</th>
                                 <th class="px-4 py-3 text-center">Токены</th>
@@ -1250,13 +1270,14 @@ const dashboardTemplate = `
                                     {{truncateModel .Model}}
                                     <span class="block text-[10px] font-mono text-slate-500 font-normal mt-0.5">{{.Model}}</span>
                                 </td>
+                                <td class="px-4 py-3 text-center text-emerald-400 font-mono font-medium">{{.TodayRequests}}</td>
                                 <td class="px-4 py-3 text-center text-slate-300 font-mono font-medium">{{.TotalRequests}}</td>
                                 <td class="px-4 py-3 text-center text-amber-400 font-mono">{{.AvgLatencyMs}} ms</td>
                                 <td class="px-4 py-3 text-center text-slate-400 font-mono">{{.TotalTokens}}</td>
                             </tr>
                             {{else}}
                             <tr>
-                                <td colspan="4" class="px-4 py-8 text-center text-slate-400">Лог запросов пуст. Сделайте первый запрос через прокси!</td>
+                                <td colspan="5" class="px-4 py-8 text-center text-slate-400">Лог запросов пуст. Сделайте первый запрос через прокси!</td>
                             </tr>
                             {{end}}
                         </tbody>
@@ -1267,18 +1288,57 @@ const dashboardTemplate = `
         {{end}}
 
         {{if eq .Provider "aihubmix"}}
-        <!-- Usage Trend: 14 дней, запросы / токены / латенси / ошибки -->
-        <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
-            <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
-                <h2 class="font-bold text-white flex items-center gap-2">
-                    <span>📈</span> Тренд за 14 дней (UTC)
-                </h2>
-                <span class="text-xs text-slate-400">модель × ключ × день, агрегат по провайдеру</span>
-            </div>
-            <div id="usage-trend-container" class="p-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <!-- Спарклайны рендерятся JS-ом из /api/stats -->
-            </div>
-        </section>
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <section class="lg:col-span-5 bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
+                <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
+                    <h2 class="font-bold text-white flex items-center gap-2">
+                        <span>📈</span> Тренд за 14 дней (UTC)
+                    </h2>
+                    <span class="text-xs text-slate-400">агрегат по провайдеру</span>
+                </div>
+                <div id="usage-trend-container" class="p-4 grid grid-cols-1 gap-4">
+                    <!-- Спарклайны рендерятся JS-ом из /api/stats -->
+                </div>
+            </section>
+            <section class="lg:col-span-7 bg-slate-800 rounded-xl border border-slate-700 overflow-hidden flex flex-col shadow-sm">
+                <div class="p-4 bg-slate-850 border-b border-slate-700">
+                    <h2 class="font-bold text-white flex items-center gap-2">
+                        <span>📊</span> Статистика моделей AIHubMix
+                    </h2>
+                </div>
+                <div class="overflow-x-auto flex-1 max-h-[400px]">
+                    <table class="w-full text-sm text-left border-collapse">
+                        <thead class="bg-slate-900 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700">
+                            <tr>
+                                <th class="px-4 py-3">Модель</th>
+                                <th class="px-4 py-3 text-center">Сегодня</th>
+                                <th class="px-4 py-3 text-center">Всего</th>
+                                <th class="px-4 py-3 text-center">Ср. ответ</th>
+                                <th class="px-4 py-3 text-center">Токены</th>
+                            </tr>
+                        </thead>
+                        <tbody id="model-stats-body" class="divide-y divide-slate-700">
+                            {{range .ModelStats}}
+                            <tr class="hover:bg-slate-750 transition">
+                                <td class="px-4 py-3 font-semibold text-white">
+                                    {{truncateModel .Model}}
+                                    <span class="block text-[10px] font-mono text-slate-500 font-normal mt-0.5">{{.Model}}</span>
+                                </td>
+                                <td class="px-4 py-3 text-center text-emerald-400 font-mono font-medium">{{.TodayRequests}}</td>
+                                <td class="px-4 py-3 text-center text-slate-300 font-mono font-medium">{{.TotalRequests}}</td>
+                                <td class="px-4 py-3 text-center text-amber-400 font-mono">{{.AvgLatencyMs}} ms</td>
+                                <td class="px-4 py-3 text-center text-slate-400 font-mono">{{.TotalTokens}}</td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td colspan="5" class="px-4 py-8 text-center text-slate-400">Лог запросов пуст. Сделайте первый запрос через прокси!</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
         {{end}}
 
         <!-- NEW SECTION: Detailed List of ALL Free Models (Collapsible Accordion) -->
