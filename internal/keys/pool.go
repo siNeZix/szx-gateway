@@ -113,14 +113,14 @@ func (kp *KeyPool) RemoveKey(hash string) error {
 }
 
 func (kp *KeyPool) RemoveKeys(hashes []string) error {
-	if err := kp.store.DeleteKeys(hashes); err != nil {
+	if err := kp.store.DeleteKeys(hashes, kp.provider); err != nil {
 		return err
 	}
 	return kp.Load()
 }
 
 func (kp *KeyPool) UpdateKeysStatus(hashes []string, status string) error {
-	if err := kp.store.UpdateKeysStatus(hashes, status); err != nil {
+	if err := kp.store.UpdateKeysStatus(hashes, kp.provider, status); err != nil {
 		return err
 	}
 	return kp.Load()

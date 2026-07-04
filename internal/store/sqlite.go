@@ -466,7 +466,7 @@ func (s *Store) DeleteKey(hash string) error {
 	return err
 }
 
-func (s *Store) DeleteKeys(hashes []string) error {
+func (s *Store) DeleteKeys(hashes []string, provider string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -476,21 +476,21 @@ func (s *Store) DeleteKeys(hashes []string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("DELETE FROM keys WHERE key_hash = ?")
+	stmt, err := tx.Prepare("DELETE FROM keys WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, hash := range hashes {
-		if _, err := stmt.Exec(hash); err != nil {
+		if _, err := stmt.Exec(hash, provider); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-func (s *Store) UpdateKeysStatus(hashes []string, status string) error {
+func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -500,14 +500,14 @@ func (s *Store) UpdateKeysStatus(hashes []string, status string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE keys SET status = ? WHERE key_hash = ?")
+	stmt, err := tx.Prepare("UPDATE keys SET status = ? WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, hash := range hashes {
-		if _, err := stmt.Exec(status, hash); err != nil {
+		if _, err := stmt.Exec(status, hash, provider); err != nil {
 			return err
 		}
 	}

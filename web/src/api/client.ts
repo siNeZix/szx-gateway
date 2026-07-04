@@ -12,6 +12,9 @@ import type {
 // Базовый путь относительный — и dev-прокси Vite, и prod (embed) на том же origin.
 
 async function unwrap<T>(res: Response): Promise<T> {
+  if (!res.headers.get('Content-Type')?.includes('application/json')) {
+    throw new Error(res.statusText || `HTTP ${res.status}`)
+  }
   const body = (await res.json()) as { data?: T; error?: string }
   if (body.error) {
     throw new Error(body.error)
