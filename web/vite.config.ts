@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 // чтобы SPA на :5173 ходил на бэкенд :8080 без CORS-настройки.
 // В проде SPA embed-ится в Go-бинарник и раздаётся с того же origin.
 export default defineConfig({
+  base: '/spa/',
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {

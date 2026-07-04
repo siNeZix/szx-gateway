@@ -10,7 +10,7 @@ import Models from './pages/Models'
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename="/spa">
         <Routes>
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />

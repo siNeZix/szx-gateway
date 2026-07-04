@@ -12,3 +12,7 @@ accounts/api_keys.txt
 .idea/
 .vscode/
 README.md
+.worktrees/
+web/node_modules/
+web/dist/
+internal/web/dist/

@@ -38,8 +38,8 @@
 | 2.10 | `Models.tsx` (top + free, поиск, copy-markdown) | ✅ | |
 | 2.11 | `npm run build` green, dist → `internal/web/dist/` | ✅ | JS 685кб (gzip 204кб), chunk-size warn не блокирующий |
 | 2.12 | `.gitignore`: dist игнорируется, `.gitkeep` коммитится | ✅ | |
-| 3.1 | `go:embed internal/web/dist` + static handler + SPA fallback | ⏳ | |
-| 4.1 | Docker multi-stage (Node build → Go build → alpine) | ⏳ | |
+| 3.1 | `go:embed internal/web/dist` + static handler + SPA fallback | ✅ | SPA пока под `/spa/`, старый `/` не трогаем |
+| 4.1 | Docker multi-stage (Node build → Go build → alpine) | ✅ | Dockerfile обновлён; docker build не проверен — daemon off |
 | 5.1 | Удалить старый `dashboardTemplate` | ⏳ | Только после smoke-теста SPA в проде |
 
 **Условные обозначения:** ✅ готово · ⏳ в работе/дальше · ❌ блокер
@@ -122,6 +122,30 @@ Add/delete/bulk — form-post’ы с редиректом, bulk умеет JSON
 - **Решение: `go:embed` отложен на срез 3.** Сейчас dist генерится Vite. Если зашить embed
   прямо сейчас, любой `go build` без Node будет падать (нет файлов). Срез 3 сделает это
   аккуратно с тестовым fallback.
+
+### 2026-07-04 — Срез 3/4 готов (embed + Docker)
+- SPA раздаётся из Go под `/spa/`:
+  - `/spa` → редирект на `/spa/`
+  - `/spa/` → `index.html`
+  - `/spa/assets/...`, `/spa/favicon.svg`, `/spa/icons.svg` → файлы из `internal/web/dist`
+  - неизвестные `/spa/*` → fallback на `index.html` для React Router
+- Старый `/` и текущий `dashboardTemplate` **не тронуты**. Это безопасный шаг:
+  текущий HTML UI остаётся рабочим, SPA можно smoke-тестить параллельно.
+- `web/vite.config.ts`: `base: '/spa/'`, поэтому build пишет ассеты как `/spa/assets/...`.
+- `web/src/App.tsx`: `BrowserRouter basename="/spa"`.
+- Добавлен `internal/web/static.go` с `go:embed dist/*` и `handleSPA`.
+- Добавлен `internal/web/static_test.go` на чистку SPA path (`cleanSPAPath`) — маленький тест
+  для security/route-логики.
+- Dockerfile стал multi-stage:
+  - `node:24-alpine` собирает SPA (`npm ci`, `npm run build`)
+  - `golang:1.26-alpine` копирует `internal/web/dist` из Node stage и собирает бинарник
+  - финальный `alpine:3.20` оставлен как раньше (ca-certificates + user app)
+- `.dockerignore`: исключены `.worktrees/`, `web/node_modules/`, `web/dist/`, `internal/web/dist/`.
+- Проверки:
+  - `npm run build` — зелёный (chunk-size warning не блокирует)
+  - `go test ./...` — зелёный
+  - `go build ./...` — зелёный
+  - `docker build` не проверен: Docker daemon не запущен (`dockerDesktopLinuxEngine` отсутствует).
 
 ### Решения по архитектуре
 - `web/` (SPA) — в корне репозитория, рядом с `internal/`. Не внутри `internal/web`,

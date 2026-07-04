@@ -45,6 +45,8 @@ func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager,
 }
 
 func (ws *WebServer) Start(mux *http.ServeMux) {
+	mux.HandleFunc("/spa", ws.basicAuth(ws.handleSPARedirect))
+	mux.HandleFunc("/spa/", ws.basicAuth(ws.handleSPA))
 	mux.HandleFunc("/", ws.basicAuth(ws.handleDashboard))
 	mux.HandleFunc("/api/stats", ws.basicAuth(ws.handleAPIStats))
 	mux.HandleFunc("/keys/add", ws.basicAuth(ws.handleKeysAdd))
