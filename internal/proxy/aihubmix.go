@@ -20,19 +20,34 @@ import (
 const aihubmixTarget = "https://aihubmix.com"
 
 var (
-	aihubmixQuotaMarkers = []string{"prevent abuse of free resources", "can only try"}
-	aihubmixRelayMarkers = []string{
-		"shortage", "low-priced resources", "rate limited by provider",
-		"unknown model", "incorrect model id", "cannot be routed",
-		"param incorrect", "are not supported", "/v1/responses",
-		"insufficient", "recharge", "no available channel", "no available",
-		"temporarily", "try again later", "overloaded",
+	aihubmixQuotaMarkers  = []string{"prevent abuse of free resources", "can only try"}
+	aihubmixReturnMarkers = []string{
+		"rate limited by provider", "model too many requests", "too many requests; please try again later",
+		"shortage", "low-priced resources", "unknown model", "incorrect model id", "cannot be routed",
+		"param incorrect", "are not supported", "not supported", "/v1/responses",
+		"no available channel", "no available", "temporarily", "try again later", "overloaded",
 	}
-	aihubmixKeyDeadMarkers = []string{
+	aihubmixInvalidKeyMarkers = []string{
 		"invalid key", "invalid token", "key is disabled", "token is disabled",
-		"unauthorized", "please log in",
+		"access token is invalid", "access token is invalid or expired", "please log in",
+	}
+	aihubmixAccountMarkers = []string{
+		"insufficient_user_quota", "balance is insufficient", "insufficient balance",
+		"recharge", "account suspended", "approved ip ranges",
+	}
+	aihubmixKeyModelMarkers = []string{
+		"not authorized to access the requested model", "not authorized to access",
 	}
 	aihubmixReasoningParams = []string{"reasoning_effort", "reasoningEffort", "reasoning"}
+)
+
+type aihubmixErrorAction int
+
+const (
+	aihubmixReturnToClient aihubmixErrorAction = iota
+	aihubmixRetryInvalidKey
+	aihubmixRetryAccountLimit
+	aihubmixRetryKeyModelLimit
 )
 
 type AihubmixHandler struct {
@@ -187,9 +202,10 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		resp, err := h.client.Do(req)
 		if err != nil {
 			log.Printf("[AIHubMix] network error: %v", err)
-			h.freezeModelOrKey(keyState, modelForLimits, "network")
+			keyState.RollbackUsage()
+			h.pool.SyncKeyToDB(keyState)
 			finalErr = err
-			continue
+			break
 		}
 
 		// Читаем первый чанк — нужен для детекта free-квоты (HTTP 200-заглушка)
@@ -212,44 +228,47 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		// 2) ошибка уровня модели/провайдера/биллинга — не вина ключа, отдаём клиенту
-		if resp.StatusCode >= 400 && containsAnyLower(firstBytes, aihubmixRelayMarkers) {
-			log.Printf("[AIHubMix] key %s → %d model/provider error (key NOT banned)", keyState.MaskedKey, resp.StatusCode)
-			h.relayResponse(w, resp, firstBytes, bufReader, keyState, r.URL.Path, startTime, ttftMs, isStream, true)
-			return
+		// 2) ошибки классифицируем по телу, не по одному status code.
+		if resp.StatusCode >= 400 {
+			switch classifyAIHubMixError(resp.StatusCode, firstBytes) {
+			case aihubmixRetryInvalidKey:
+				resp.Body.Close()
+				log.Printf("[AIHubMix] key %s dead/account blocked (status %d)", keyState.MaskedKey, resp.StatusCode)
+				keyState.SetStatus("invalid")
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("key failed with status %d", resp.StatusCode)
+				continue
+			case aihubmixRetryAccountLimit:
+				resp.Body.Close()
+				log.Printf("[AIHubMix] key %s account/key limit (status %d), trying next key", keyState.MaskedKey, resp.StatusCode)
+				keyState.MarkDayExhausted()
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("key/account limit with status %d", resp.StatusCode)
+				continue
+			case aihubmixRetryKeyModelLimit:
+				resp.Body.Close()
+				log.Printf("[AIHubMix] key %s cannot use model %s (status %d), trying next key", keyState.MaskedKey, modelForLimits, resp.StatusCode)
+				if modelForLimits != "" {
+					keyState.SetModelCooldown(modelForLimits, time.Now().Add(24*time.Hour))
+				}
+				h.pool.SyncKeyToDB(keyState)
+				finalErr = fmt.Errorf("key/model limit with status %d", resp.StatusCode)
+				continue
+			default:
+				log.Printf("[AIHubMix] %d model/provider/request error (key NOT banned)", resp.StatusCode)
+				keyState.RollbackUsage()
+				h.pool.SyncKeyToDB(keyState)
+				h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true)
+				return
+			}
 		}
 
-		// 3) ключ мёртв (invalid/disabled)
+		// 3) ключ мёртв без структурированного тела
 		if isKeyDead(resp.StatusCode, firstBytes) {
 			resp.Body.Close()
 			log.Printf("[AIHubMix] key %s dead (status %d)", keyState.MaskedKey, resp.StatusCode)
 			keyState.SetStatus("invalid")
 			h.pool.SyncKeyToDB(keyState)
-			continue
-		}
-
-		// 4) 402/429 — лимит: морозим модель, ротация
-		if resp.StatusCode == 402 || resp.StatusCode == 429 {
-			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s limited (status %d) for model %s", keyState.MaskedKey, resp.StatusCode, modelForLimits)
-			h.freezeModelOrKey(keyState, modelForLimits, "rate_limit")
-			continue
-		}
-
-		// 5) 401/403 без явного "мёртв" — тоже ротация
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s auth failed (status %d)", keyState.MaskedKey, resp.StatusCode)
-			keyState.SetStatus("invalid")
-			h.pool.SyncKeyToDB(keyState)
-			continue
-		}
-
-		// 6) 5xx — upstream упал: морозим модель, ротация
-		if resp.StatusCode >= 500 {
-			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s upstream 5xx (status %d) for model %s", keyState.MaskedKey, resp.StatusCode, modelForLimits)
-			h.freezeModelOrKey(keyState, modelForLimits, "upstream_5xx")
 			continue
 		}
 
@@ -404,10 +423,29 @@ func containsAnyLower(data []byte, markers []string) bool {
 }
 
 func isKeyDead(status int, data []byte) bool {
-	if containsAnyLower(data, aihubmixKeyDeadMarkers) {
+	if containsAnyLower(data, aihubmixInvalidKeyMarkers) {
 		return true
 	}
 	return status == 401 && len(data) == 0
+}
+
+func classifyAIHubMixError(status int, data []byte) aihubmixErrorAction {
+	if isKeyDead(status, data) {
+		return aihubmixRetryInvalidKey
+	}
+	if containsAnyLower(data, aihubmixKeyModelMarkers) {
+		return aihubmixRetryKeyModelLimit
+	}
+	if containsAnyLower(data, aihubmixAccountMarkers) {
+		return aihubmixRetryAccountLimit
+	}
+	if containsAnyLower(data, aihubmixReturnMarkers) {
+		return aihubmixReturnToClient
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return aihubmixRetryInvalidKey
+	}
+	return aihubmixReturnToClient
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -425,22 +463,4 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(k, vv)
 		}
 	}
-}
-
-// freezeModelOrKey замораживает конкретную модель ключа (1 мин → до конца суток).
-// Если модель неизвестна (не /chat/completions), гасит весь ключ в cooldown.
-func (h *AihubmixHandler) freezeModelOrKey(keyState *keys.KeyState, model, reason string) {
-	if model != "" {
-		dur, err := h.store.FreezeModel("aihubmix", keyState.KeyHash, model, time.Now())
-		if err != nil {
-			log.Printf("[AIHubMix] failed to freeze model %s: %v", model, err)
-			keyState.SetCooldown(time.Minute, "")
-		} else {
-			keyState.SetModelCooldown(model, time.Now().Add(dur))
-			log.Printf("[AIHubMix] key %s model %s frozen (%s) for %v", keyState.MaskedKey, model, reason, dur)
-		}
-	} else {
-		keyState.SetCooldown(time.Minute, "")
-	}
-	h.pool.SyncKeyToDB(keyState)
 }

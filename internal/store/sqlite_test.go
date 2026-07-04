@@ -114,13 +114,17 @@ func TestStore_BulkOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to add keys: %v", err)
 	}
+	_, err = s.AddKeys([]string{"key4"}, "aihubmix")
+	if err != nil {
+		t.Fatalf("failed to add aihubmix key: %v", err)
+	}
 
 	h1 := store.HashKey("key1")
 	h2 := store.HashKey("key2")
 	h3 := store.HashKey("key3")
 
 	// Test bulk status update to disabled
-	err = s.UpdateKeysStatus([]string{h1, h2}, "disabled")
+	err = s.UpdateKeysStatus([]string{h1, h2}, "openrouter", "disabled")
 	if err != nil {
 		t.Fatalf("failed to update keys status: %v", err)
 	}
@@ -140,8 +144,16 @@ func TestStore_BulkOperations(t *testing.T) {
 		t.Errorf("expected 2 disabled keys, got %d", disabledCount)
 	}
 
+	aiKeys, err := s.GetKeys("aihubmix")
+	if err != nil {
+		t.Fatalf("failed to get aihubmix keys: %v", err)
+	}
+	if len(aiKeys) != 1 || aiKeys[0].Status == "disabled" {
+		t.Fatalf("openrouter bulk update touched aihubmix keys: %+v", aiKeys)
+	}
+
 	// Test bulk delete
-	err = s.DeleteKeys([]string{h1, h2, h3})
+	err = s.DeleteKeys([]string{h1, h2, h3}, "openrouter")
 	if err != nil {
 		t.Fatalf("failed to delete keys: %v", err)
 	}
@@ -152,6 +164,13 @@ func TestStore_BulkOperations(t *testing.T) {
 	}
 	if len(dbKeysAfter) != 0 {
 		t.Errorf("expected 0 keys after bulk deletion, got %d", len(dbKeysAfter))
+	}
+	aiKeysAfter, err := s.GetKeys("aihubmix")
+	if err != nil {
+		t.Fatalf("failed to get aihubmix keys after deletion: %v", err)
+	}
+	if len(aiKeysAfter) != 1 {
+		t.Errorf("openrouter bulk delete touched aihubmix keys, got %d", len(aiKeysAfter))
 	}
 }
 

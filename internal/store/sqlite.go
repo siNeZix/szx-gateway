@@ -15,19 +15,19 @@ type Store struct {
 }
 
 type DBKey struct {
-	KeyHash           string
-	MaskedKey         string
-	Status            string
-	LimitRemaining    int64
-	UsageToday        int64
-	MaxLimit          int64
-	IsFreeTier        bool
-	RateLimitReq      int
-	RateLimitInterval string
-	CooldownUntil     time.Time
-	LastCheckedAt     time.Time
-	LastUsedAt        time.Time
-	RawKey            string
+	KeyHash           string    `json:"key_hash"`
+	MaskedKey         string    `json:"masked_key"`
+	Status            string    `json:"status"`
+	LimitRemaining    int64     `json:"limit_remaining"`
+	UsageToday        int64     `json:"usage_today"`
+	MaxLimit          int64     `json:"max_limit"`
+	IsFreeTier        bool      `json:"is_free_tier"`
+	RateLimitReq      int       `json:"rate_limit_req"`
+	RateLimitInterval string    `json:"rate_limit_interval"`
+	CooldownUntil     time.Time `json:"cooldown_until"`
+	LastCheckedAt     time.Time `json:"last_checked_at"`
+	LastUsedAt        time.Time `json:"last_used_at"`
+	RawKey            string    `json:"-"` // критично: никогда не отдаём сырой ключ в API
 }
 
 type DBRequest struct {
@@ -59,18 +59,18 @@ type DBRateLimit struct {
 }
 
 type DBModel struct {
-	ID            string
-	Name          string
-	Rank          int
-	ContextLength int64
-	MaxOutput     int64
-	Type          string
-	Features      string
-	Modalities    string
-	InputPrice    float64
-	OutputPrice   float64
-	Description   string
-	UpdatedAt     time.Time
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Rank          int       `json:"rank"`
+	ContextLength int64     `json:"context_length"`
+	MaxOutput     int64     `json:"max_output"`
+	Type          string    `json:"type"`
+	Features      string    `json:"features"`
+	Modalities    string    `json:"modalities"`
+	InputPrice    float64   `json:"input_price"`
+	OutputPrice   float64   `json:"output_price"`
+	Description   string    `json:"description"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ModelUsage struct {
@@ -466,7 +466,7 @@ func (s *Store) DeleteKey(hash string) error {
 	return err
 }
 
-func (s *Store) DeleteKeys(hashes []string) error {
+func (s *Store) DeleteKeys(hashes []string, provider string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -476,21 +476,21 @@ func (s *Store) DeleteKeys(hashes []string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("DELETE FROM keys WHERE key_hash = ?")
+	stmt, err := tx.Prepare("DELETE FROM keys WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, hash := range hashes {
-		if _, err := stmt.Exec(hash); err != nil {
+		if _, err := stmt.Exec(hash, provider); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-func (s *Store) UpdateKeysStatus(hashes []string, status string) error {
+func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
@@ -500,14 +500,14 @@ func (s *Store) UpdateKeysStatus(hashes []string, status string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE keys SET status = ? WHERE key_hash = ?")
+	stmt, err := tx.Prepare("UPDATE keys SET status = ? WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, hash := range hashes {
-		if _, err := stmt.Exec(status, hash); err != nil {
+		if _, err := stmt.Exec(status, hash, provider); err != nil {
 			return err
 		}
 	}
@@ -732,31 +732,33 @@ func (s *Store) GetCachedAihubmixFreeModels() ([]DBModel, error) {
 
 // Stats helper structures
 type GeneralStats struct {
-	TotalRequests int64
-	TodayRequests int64
-	ActiveKeys    int
-	BlockedKeys   int
-	InvalidKeys   int
-	UncheckedKeys int
-	TotalKeys     int
+	TotalRequests int64 `json:"total_requests"`
+	TodayRequests int64 `json:"today_requests"`
+	ActiveKeys    int   `json:"active_keys"`
+	BlockedKeys   int   `json:"blocked_keys"`
+	InvalidKeys   int   `json:"invalid_keys"`
+	UncheckedKeys int   `json:"unchecked_keys"`
+	TotalKeys     int   `json:"total_keys"`
 }
 
 type ModelStats struct {
-	Model         string
-	TotalRequests int64
-	AvgLatencyMs  int64
-	TotalTokens   int64
+	Model         string `json:"model"`
+	TodayRequests int64  `json:"today_requests"`
+	TotalRequests int64  `json:"total_requests"`
+	AvgLatencyMs  int64  `json:"avg_latency_ms"`
+	TotalTokens   int64  `json:"total_tokens"`
 }
 
 type KeyUsageStats struct {
-	MaskedKey     string
-	KeyHash       string
-	Status        string
-	TodayUsage    int64
-	Limit         int64
-	TotalRequests int64
-	ErrorRequests int64
-	CooldownUntil time.Time
+	MaskedKey     string    `json:"masked_key"`
+	KeyHash       string    `json:"key_hash"`
+	Status        string    `json:"status"`
+	TodayUsage    int64     `json:"today_usage"`
+	Limit         int64     `json:"limit"`
+	TotalRequests int64     `json:"total_requests"`
+	ErrorRequests int64     `json:"error_requests"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+	LastUsedAt    time.Time `json:"last_used_at"`
 }
 
 func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
@@ -783,9 +785,8 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 		return nil, err
 	}
 
-	// Local midnight, matching the per-key daily reset (KeyState.ResetDailyUsageIfNewDay).
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND provider = ?`, todayStart, provider).Scan(&stats.TodayRequests)
 	if err != nil {
 		return nil, err
@@ -795,17 +796,20 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 }
 
 func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	rows, err := s.db.Query(`
 		SELECT 
 			model, 
+			COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0),
 			COUNT(*), 
 			CAST(AVG(latency_ms) AS INTEGER), 
 			SUM(prompt_tokens + completion_tokens) 
 		FROM requests
 		WHERE provider = ?
 		GROUP BY model 
-		ORDER BY COUNT(*) DESC
-	`, provider)
+		ORDER BY 2 DESC, COUNT(*) DESC
+	`, todayStart, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +819,7 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 	for rows.Next() {
 		m := ModelStats{}
 		var totalTokens sql.NullInt64
-		err := rows.Scan(&m.Model, &m.TotalRequests, &m.AvgLatencyMs, &totalTokens)
+		err := rows.Scan(&m.Model, &m.TodayRequests, &m.TotalRequests, &m.AvgLatencyMs, &totalTokens)
 		if err != nil {
 			return nil, err
 		}
@@ -834,6 +838,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 			k.usage_today, 
 			k.max_limit, 
 			k.cooldown_until,
+			k.last_used_at,
 			COUNT(r.id) as total_reqs,
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) as err_reqs
 		FROM keys k
@@ -852,7 +857,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 		k := KeyUsageStats{}
 		var totalReqs, errReqs sql.NullInt64
 		err := rows.Scan(
-			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil,
+			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil, &k.LastUsedAt,
 			&totalReqs, &errReqs,
 		)
 		if err != nil {

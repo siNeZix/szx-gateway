@@ -21,6 +21,10 @@ accounts/api_keys.txt
 /.worktrees/
 .opencode/
 
+# SPA build artifacts (встроенный UI генерится Vite, не коммитится)
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
+
 # OS/IDEs
 .idea/
 .vscode/
