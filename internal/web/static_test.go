@@ -8,11 +8,11 @@ func TestCleanSPAPath(t *testing.T) {
 		want string
 		ok   bool
 	}{
-		{"/spa/", "index.html", true},
-		{"/spa/keys", "keys", true},
-		{"/spa/assets/app.js", "assets/app.js", true},
-		{"/spa//models", "models", true},
-		{"/spa/../secret", "", false},
+		{"/", "index.html", true},
+		{"/keys", "keys", true},
+		{"/assets/app.js", "assets/app.js", true},
+		{"//models", "models", true},
+		{"/../secret", "", false},
 	}
 
 	for _, tt := range tests {

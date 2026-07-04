@@ -13,17 +13,13 @@ import (
 //go:embed dist/*
 var embeddedDist embed.FS
 
-func (ws *WebServer) handleSPARedirect(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/spa" {
-		http.NotFound(w, r)
-		return
-	}
-	http.Redirect(w, r, "/spa/", http.StatusMovedPermanently)
-}
-
 func (ws *WebServer) handleSPA(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/keys/") || strings.HasPrefix(r.URL.Path, "/v1/") {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -46,7 +42,7 @@ func (ws *WebServer) handleSPA(w http.ResponseWriter, r *http.Request) {
 }
 
 func cleanSPAPath(urlPath string) (string, bool) {
-	name := strings.TrimPrefix(urlPath, "/spa/")
+	name := strings.TrimPrefix(urlPath, "/")
 	if name == "" || name == "/" {
 		return "index.html", true
 	}

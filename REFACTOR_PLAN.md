@@ -40,7 +40,7 @@
 | 2.12 | `.gitignore`: dist игнорируется, `.gitkeep` коммитится | ✅ | |
 | 3.1 | `go:embed internal/web/dist` + static handler + SPA fallback | ✅ | SPA пока под `/spa/`, старый `/` не трогаем |
 | 4.1 | Docker multi-stage (Node build → Go build → alpine) | ✅ | Dockerfile обновлён; docker build не проверен — daemon off |
-| 5.1 | Удалить старый `dashboardTemplate` | ⏳ | Только после smoke-теста SPA в проде |
+| 5.1 | Удалить старый `dashboardTemplate` | ✅ | `/` теперь SPA; `/api/v2/*` — новый API |
 
 **Условные обозначения:** ✅ готово · ⏳ в работе/дальше · ❌ блокер
 
@@ -146,6 +146,19 @@ Add/delete/bulk — form-post’ы с редиректом, bulk умеет JSON
   - `go test ./...` — зелёный
   - `go build ./...` — зелёный
   - `docker build` не проверен: Docker daemon не запущен (`dockerDesktopLinuxEngine` отсутствует).
+
+### 2026-07-04 — Срез 5 готов (SPA стал основным UI)
+- Старый `dashboardTemplate` и Go `html/template` рендер удалены из `internal/web/server.go`.
+- `/` теперь отдаёт встроенный SPA из `internal/web/dist`.
+- SPA fallback работает для client-side маршрутов: `/keys`, `/stats`, `/models`.
+- `/api/*`, `/keys/*`, `/v1/*` не попадают в SPA fallback и возвращают 404/свой обработчик.
+- Старые form-эндпоинты `/keys/add`, `/keys/delete`, `/keys/bulk` удалены вместе со старым UI.
+  SPA использует `/api/v2/keys` и `/api/v2/keys/bulk`.
+- Vite `base` вернули к `/`, `BrowserRouter` без `basename`.
+- Проверки:
+  - `npm run build` — зелёный (chunk-size warning не блокирует)
+  - `go test ./...` — зелёный
+  - `go build ./...` — зелёный
 
 ### Решения по архитектуре
 - `web/` (SPA) — в корне репозитория, рядом с `internal/`. Не внутри `internal/web`,
