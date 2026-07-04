@@ -155,7 +155,13 @@ func (ks *KeyState) CanUseModel(now time.Time, model string) bool {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	ks.ResetDailyUsageIfNewDay()
-	return ks.Status != "invalid" && ks.Status != "day_exhausted" && ks.Status != "disabled" && !ks.CooldownUntil.After(now) && !ks.ModelCooldownUntil[model].After(now)
+	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" {
+		return false
+	}
+	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
+		return false
+	}
+	return !ks.CooldownUntil.After(now) && !ks.ModelCooldownUntil[model].After(now)
 }
 
 // TryReserve atomically checks usability and, if usable, registers the request.
@@ -178,6 +184,9 @@ func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
 
 	ks.ResetDailyUsageIfNewDay()
 	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" || ks.CooldownUntil.After(now) {
+		return false
+	}
+	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
 		return false
 	}
 	if ks.ModelCooldownUntil[model].After(now) {

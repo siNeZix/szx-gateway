@@ -81,6 +81,7 @@ type ModelUsage struct {
 	Requests  int64
 	Tokens    int64
 	Exhausted bool
+	Frozen    bool
 }
 
 type ModelUsageStats struct {
@@ -262,7 +263,12 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN latency_sum_ms INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN errors INTEGER NOT NULL DEFAULT 0;`)
-	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 0, status = CASE WHEN status = 'day_exhausted' THEN 'unchecked' ELSE status END WHERE provider = 'aihubmix' AND max_limit = 10;`)
+	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN freeze_count INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN frozen_until TEXT NOT NULL DEFAULT '';`)
+	// ponytail: 10 запросов/аккаунт/сутки — подтверждённый лимит AIHubMix.
+	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
+	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
+	_, _ = s.db.Exec(`UPDATE keys SET status = 'unchecked' WHERE provider = 'aihubmix' AND status = 'day_exhausted';`)
 
 	return nil
 }
@@ -274,11 +280,12 @@ func UTCDay(t time.Time) string {
 func (s *Store) GetModelUsage(provider, keyHash, model string, now time.Time) (ModelUsage, error) {
 	u := ModelUsage{Provider: provider, KeyHash: keyHash, Model: model, Day: UTCDay(now)}
 	var exhausted int
+	var frozenUntil string
 	err := s.db.QueryRow(`
-		SELECT requests, tokens, exhausted
+		SELECT requests, tokens, exhausted, frozen_until
 		FROM model_usage
 		WHERE provider = ? AND key_hash = ? AND model = ? AND day = ?
-	`, provider, keyHash, model, u.Day).Scan(&u.Requests, &u.Tokens, &exhausted)
+	`, provider, keyHash, model, u.Day).Scan(&u.Requests, &u.Tokens, &exhausted, &frozenUntil)
 	if err == sql.ErrNoRows {
 		return u, nil
 	}
@@ -286,6 +293,11 @@ func (s *Store) GetModelUsage(provider, keyHash, model string, now time.Time) (M
 		return u, err
 	}
 	u.Exhausted = exhausted != 0
+	if frozenUntil != "" {
+		if t, perr := time.Parse(time.RFC3339, frozenUntil); perr == nil && t.After(now) {
+			u.Frozen = true
+		}
+	}
 	return u, nil
 }
 
@@ -312,6 +324,36 @@ func (s *Store) MarkModelExhausted(provider, keyHash, model string, now time.Tim
 			updated_at = excluded.updated_at
 	`, provider, keyHash, model, UTCDay(now), now.UTC())
 	return err
+}
+
+// FreezeModel замораживает модель ключа: 1-я ошибка → 1 мин, 2-я → до конца UTC-дня.
+// Возвращает длительность заморозки.
+func (s *Store) FreezeModel(provider, keyHash, model string, now time.Time) (time.Duration, error) {
+	day := UTCDay(now)
+	var freezeCount int
+	err := s.db.QueryRow(`SELECT freeze_count FROM model_usage WHERE provider=? AND key_hash=? AND model=? AND day=?`, provider, keyHash, model, day).Scan(&freezeCount)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, err
+	}
+	freezeCount++
+	var until time.Time
+	if freezeCount == 1 {
+		until = now.Add(time.Minute)
+	} else {
+		until = now.Add(24 * time.Hour)
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO model_usage (provider, key_hash, model, day, freeze_count, frozen_until, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
+			freeze_count = excluded.freeze_count,
+			frozen_until = excluded.frozen_until,
+			updated_at = excluded.updated_at
+	`, provider, keyHash, model, day, freezeCount, until.UTC().Format(time.RFC3339), now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return until.Sub(now), nil
 }
 
 func (s *Store) GetModelUsageStats(provider string, now time.Time) ([]ModelUsageStats, error) {

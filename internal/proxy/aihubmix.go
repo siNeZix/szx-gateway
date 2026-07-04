@@ -187,8 +187,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		resp, err := h.client.Do(req)
 		if err != nil {
 			log.Printf("[AIHubMix] network error: %v", err)
-			keyState.SetCooldown(30*time.Second, "")
-			h.pool.SyncKeyToDB(keyState)
+			h.freezeModelOrKey(keyState, modelForLimits, "network")
 			finalErr = err
 			continue
 		}
@@ -206,14 +205,9 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		// 1) free-квота исчерпана: HTTP 200 с заглушкой "...prevent abuse... can only try..."
 		if resp.StatusCode == 200 && containsAny(firstBytes, aihubmixQuotaMarkers) {
 			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s free-quota exhausted for model %s", keyState.MaskedKey, modelForLimits)
-			if modelForLimits != "" {
-				if err := h.store.MarkModelExhausted("aihubmix", keyState.KeyHash, modelForLimits, time.Now()); err != nil {
-					log.Printf("[AIHubMix] failed to mark model exhausted: %v", err)
-				}
-			} else {
-				keyState.SetStatus("day_exhausted")
-			}
+			log.Printf("[AIHubMix] key %s free-quota exhausted (account daily limit reached)", keyState.MaskedKey)
+			// ponytail: лимит 10 запросов — на аккаунт, не на модель. Морозим весь ключ до конца суток.
+			keyState.MarkDayExhausted()
 			h.pool.SyncKeyToDB(keyState)
 			continue
 		}
@@ -234,16 +228,11 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 
-		// 4) 402/429 — лимит, cooldown + retry
+		// 4) 402/429 — лимит: морозим модель, ротация
 		if resp.StatusCode == 402 || resp.StatusCode == 429 {
 			resp.Body.Close()
-			log.Printf("[AIHubMix] key %s limited (status %d)", keyState.MaskedKey, resp.StatusCode)
-			if modelForLimits != "" {
-				keyState.SetModelCooldown(modelForLimits, time.Now().Add(60*time.Second))
-			} else {
-				keyState.SetCooldown(60*time.Second, "rate_limited")
-			}
-			h.pool.SyncKeyToDB(keyState)
+			log.Printf("[AIHubMix] key %s limited (status %d) for model %s", keyState.MaskedKey, resp.StatusCode, modelForLimits)
+			h.freezeModelOrKey(keyState, modelForLimits, "rate_limit")
 			continue
 		}
 
@@ -253,6 +242,14 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			log.Printf("[AIHubMix] key %s auth failed (status %d)", keyState.MaskedKey, resp.StatusCode)
 			keyState.SetStatus("invalid")
 			h.pool.SyncKeyToDB(keyState)
+			continue
+		}
+
+		// 6) 5xx — upstream упал: морозим модель, ротация
+		if resp.StatusCode >= 500 {
+			resp.Body.Close()
+			log.Printf("[AIHubMix] key %s upstream 5xx (status %d) for model %s", keyState.MaskedKey, resp.StatusCode, modelForLimits)
+			h.freezeModelOrKey(keyState, modelForLimits, "upstream_5xx")
 			continue
 		}
 
@@ -428,4 +425,22 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(k, vv)
 		}
 	}
+}
+
+// freezeModelOrKey замораживает конкретную модель ключа (1 мин → до конца суток).
+// Если модель неизвестна (не /chat/completions), гасит весь ключ в cooldown.
+func (h *AihubmixHandler) freezeModelOrKey(keyState *keys.KeyState, model, reason string) {
+	if model != "" {
+		dur, err := h.store.FreezeModel("aihubmix", keyState.KeyHash, model, time.Now())
+		if err != nil {
+			log.Printf("[AIHubMix] failed to freeze model %s: %v", model, err)
+			keyState.SetCooldown(time.Minute, "")
+		} else {
+			keyState.SetModelCooldown(model, time.Now().Add(dur))
+			log.Printf("[AIHubMix] key %s model %s frozen (%s) for %v", keyState.MaskedKey, model, reason, dur)
+		}
+	} else {
+		keyState.SetCooldown(time.Minute, "")
+	}
+	h.pool.SyncKeyToDB(keyState)
 }

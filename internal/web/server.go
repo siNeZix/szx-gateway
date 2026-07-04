@@ -11,7 +11,6 @@ import (
 
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
-	"openrouter-gateway/internal/limits"
 	"openrouter-gateway/internal/models"
 	"openrouter-gateway/internal/store"
 )
@@ -26,7 +25,6 @@ type WebServer struct {
 type DashboardData struct {
 	GeneralStats *store.GeneralStats
 	ModelStats   []store.ModelStats
-	LimitStats   []LimitStat
 	KeyStats     []store.KeyUsageStats
 	TopModels    []store.DBModel
 	FreeModels   []store.DBModel
@@ -35,15 +33,6 @@ type DashboardData struct {
 	RefreshedAt  string
 	Token        string
 	Provider     string
-}
-
-type LimitStat struct {
-	Model       string
-	RPM         int
-	RequestsDay int64
-	TokensDay   int64
-	Requests    int64
-	Tokens      int64
 }
 
 func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool) *WebServer {
@@ -120,21 +109,6 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limitStats := []LimitStat{}
-	if provider == "aihubmix" {
-		usageByModel := map[string]store.ModelUsageStats{}
-		if usage, err := ws.store.GetModelUsageStats(provider, time.Now()); err == nil {
-			for _, u := range usage {
-				usageByModel[u.Model] = u
-			}
-		}
-		for _, m := range ws.rankingMgr.GetAihubmixFreeModels() {
-			l, _ := limits.AIHubMixFree(m.ID)
-			u := usageByModel[m.ID]
-			limitStats = append(limitStats, LimitStat{Model: m.ID, RPM: l.RPM, RequestsDay: l.RequestsDay, TokensDay: l.TokensDay, Requests: u.Requests, Tokens: u.Tokens})
-		}
-	}
-
 	// Тренд за 14 дней (только для aihubmix, т.к. model_usage пишется им).
 	var usageTrend []store.ModelUsageTrend
 	if provider == "aihubmix" {
@@ -157,7 +131,6 @@ func (ws *WebServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := DashboardData{
 		GeneralStats: general,
 		ModelStats:   modelsStats,
-		LimitStats:   limitStats,
 		KeyStats:     keyStats,
 		TopModels:    topModels,
 		FreeModels:   freeModels,
@@ -251,21 +224,6 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		topModels = ws.rankingMgr.GetTopModels()
 	}
 
-	limitStats := []LimitStat{}
-	if provider == "aihubmix" {
-		usageByModel := map[string]store.ModelUsageStats{}
-		if usage, err := ws.store.GetModelUsageStats(provider, time.Now()); err == nil {
-			for _, u := range usage {
-				usageByModel[u.Model] = u
-			}
-		}
-		for _, m := range ws.rankingMgr.GetAihubmixFreeModels() {
-			l, _ := limits.AIHubMixFree(m.ID)
-			u := usageByModel[m.ID]
-			limitStats = append(limitStats, LimitStat{Model: m.ID, RPM: l.RPM, RequestsDay: l.RequestsDay, TokensDay: l.TokensDay, Requests: u.Requests, Tokens: u.Tokens})
-		}
-	}
-
 	// Тренд за 14 дней (только для aihubmix).
 	var usageTrend []store.ModelUsageTrend
 	if provider == "aihubmix" {
@@ -350,7 +308,6 @@ func (ws *WebServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	res := map[string]interface{}{
 		"general":      customGeneral,
 		"models":       customModels,
-		"limits":       limitStats,
 		"keys":         customKeys,
 		"top_models":   topModels,
 		"usage_trend":  usageTrend,
@@ -666,11 +623,6 @@ const dashboardTemplate = `
                     }
                 }
 
-                const limitsBody = document.getElementById('aihubmix-limits-body');
-                if (limitsBody && data.limits) {
-                    limitsBody.innerHTML = data.limits.map(renderLimitRow).join('');
-                }
-
                 // Тренд за 14 дней
                 renderTrend(data.usage_trend);
 
@@ -682,25 +634,6 @@ const dashboardTemplate = `
             } catch (err) {
                 console.error('Failed to auto update stats:', err);
             }
-        }
-
-        function renderLimitRow(l) {
-            const reqLimit = Number(l.RequestsDay || l.requests_day || 0);
-            const tokLimit = Number(l.TokensDay || l.tokens_day || 0);
-            const req = Number(l.Requests || l.requests || 0);
-            const tok = Number(l.Tokens || l.tokens || 0);
-            const rpm = Number(l.RPM || l.rpm || 0);
-            const reqText = reqLimit > 0 ? (req + ' / ' + reqLimit) : (req + ' / ?');
-            const tokText = tokLimit > 0 ? (tok + ' / ' + tokLimit) : (tok + ' / ?');
-            const reqPct = reqLimit > 0 ? Math.min(100, req / reqLimit * 100) : 0;
-            return '' +
-                '<tr class="hover:bg-slate-750/50 transition">' +
-                    '<td class="px-4 py-2.5 font-mono text-xs text-slate-200">' + (l.Model || l.model) + '</td>' +
-                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + rpm + '</td>' +
-                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + reqText + '</td>' +
-                    '<td class="px-4 py-2.5 text-center font-mono text-slate-300">' + tokText + '</td>' +
-                    '<td class="px-4 py-2.5 min-w-32"><div class="h-1.5 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-indigo-400" style="width:' + reqPct + '%"></div></div></td>' +
-                '</tr>';
         }
 
         // Спарклайн: SVG-полилиния ввиде бар-чарта, без зависимостей.
@@ -872,7 +805,7 @@ const dashboardTemplate = `
                     }
 
                     const limitText = k.limit <= 0 ? '<span class="text-slate-500">?</span>' : 
-                        ('<span class="' + (k.limit <= 10 ? 'text-rose-400 font-semibold' : 'text-slate-300') + '">' + k.limit + '</span>');
+                        ('<span class="' + (k.today_usage >= k.limit ? 'text-rose-400 font-semibold' : (k.limit - k.today_usage <= 2 ? 'text-amber-400 font-semibold' : 'text-slate-300')) + '">' + k.today_usage + ' / ' + k.limit + '</span>');
 
                     const errPercent = k.total_requests > 0 ? (k.error_requests / k.total_requests * 100) : 0;
                     const errText = k.total_requests > 0 ? 
@@ -1334,41 +1267,6 @@ const dashboardTemplate = `
         {{end}}
 
         {{if eq .Provider "aihubmix"}}
-        <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
-            <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
-                <h2 class="font-bold text-white flex items-center gap-2">
-                    <span>⏱️</span> Лимиты AIHubMix free-моделей
-                </h2>
-                <span class="text-xs text-slate-400">UTC сутки, счётчик: ключ + модель</span>
-            </div>
-            <div class="overflow-x-auto max-h-[360px] overflow-y-auto">
-                <table class="w-full text-sm text-left border-collapse">
-                    <thead class="bg-slate-900 text-xs uppercase tracking-wider text-slate-400 border-b border-slate-700 sticky top-0 z-10">
-                        <tr>
-                            <th class="px-4 py-2.5">Модель</th>
-                            <th class="px-4 py-2.5 text-center">RPM</th>
-                            <th class="px-4 py-2.5 text-center">Requests/day</th>
-                            <th class="px-4 py-2.5 text-center">Tokens/day</th>
-                            <th class="px-4 py-2.5">Запросы</th>
-                        </tr>
-                    </thead>
-                    <tbody id="aihubmix-limits-body" class="divide-y divide-slate-700">
-                        {{range .LimitStats}}
-                        <tr class="hover:bg-slate-750/50 transition">
-                            <td class="px-4 py-2.5 font-mono text-xs text-slate-200">{{.Model}}</td>
-                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.RPM}}</td>
-                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.Requests}} / {{if gt .RequestsDay 0}}{{.RequestsDay}}{{else}}?{{end}}</td>
-                            <td class="px-4 py-2.5 text-center font-mono text-slate-300">{{.Tokens}} / {{if gt .TokensDay 0}}{{.TokensDay}}{{else}}?{{end}}</td>
-                            <td class="px-4 py-2.5 min-w-32"><div class="h-1.5 bg-slate-700 rounded-full overflow-hidden"><div class="h-full bg-indigo-400" style="width: {{percentage .Requests .RequestsDay}}%"></div></div></td>
-                        </tr>
-                        {{else}}
-                        <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">Лимиты появятся после загрузки списка моделей.</td></tr>
-                        {{end}}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-
         <!-- Usage Trend: 14 дней, запросы / токены / латенси / ошибки -->
         <section class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-sm">
             <div class="p-4 bg-slate-850 border-b border-slate-700 flex items-center justify-between gap-3">
@@ -1528,8 +1426,8 @@ const dashboardTemplate = `
                             </th>
                             <th onclick="toggleSort('key')" class="px-4 py-3 cursor-pointer hover:bg-slate-850 select-none transition">Ключ <span id="sort-indicator-key"></span></th>
                             <th onclick="toggleSort('status')" class="px-4 py-3 cursor-pointer hover:bg-slate-850 select-none transition">Статус <span id="sort-indicator-status"></span></th>
-                            <th onclick="toggleSort('usage')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Использовано сегодня <span id="sort-indicator-usage"></span></th>
-                            <th onclick="toggleSort('limit')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Остаток лимита <span id="sort-indicator-limit"></span></th>
+                            <th onclick="toggleSort('usage')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Запросов сегодня <span id="sort-indicator-usage"></span></th>
+                            <th onclick="toggleSort('limit')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Лимит/сутки <span id="sort-indicator-limit"></span></th>
                             <th onclick="toggleSort('requests')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Всего запросов <span id="sort-indicator-requests"></span></th>
                             <th onclick="toggleSort('errors')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Процент ошибок <span id="sort-indicator-errors"></span></th>
                             <th onclick="toggleSort('cooldown')" class="px-4 py-3 text-center cursor-pointer hover:bg-slate-850 select-none transition">Cooldown <span id="sort-indicator-cooldown"></span></th>
