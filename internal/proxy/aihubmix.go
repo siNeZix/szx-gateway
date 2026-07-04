@@ -338,14 +338,15 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	}
 
 	if err := h.store.LogRequest(&store.DBRequest{
-		Timestamp:  time.Now(),
-		KeyHash:    ks.KeyHash,
-		Model:      model,
-		StatusCode: resp.StatusCode,
-		LatencyMs:  latencyMs,
-		TTFTMs:     ttftMs,
-		IsStream:   isStream,
-		Provider:   "aihubmix",
+		Timestamp:        time.Now(),
+		KeyHash:          ks.KeyHash,
+		Model:            model,
+		StatusCode:       resp.StatusCode,
+		CompletionTokens: int(tokens),
+		LatencyMs:        latencyMs,
+		TTFTMs:           ttftMs,
+		IsStream:         isStream,
+		Provider:         "aihubmix",
 	}); err != nil {
 		log.Printf("[AIHubMix] failed to log request: %v", err)
 	}

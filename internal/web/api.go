@@ -59,6 +59,7 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/stats", ws.basicAuth(ws.apiStats))
 	mux.HandleFunc("/api/v2/stats/models", ws.basicAuth(ws.apiStatsModels))
 	mux.HandleFunc("/api/v2/stats/usage", ws.basicAuth(ws.apiStatsUsage))
+	mux.HandleFunc("/api/v2/requests", ws.basicAuth(ws.apiRequests))
 	mux.HandleFunc("/api/v2/models", ws.basicAuth(ws.apiModels))
 }
 
@@ -365,14 +366,11 @@ func (ws *WebServer) apiStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Тренд за 14 дней (только для aihubmix — у openrouter нет model_usage).
-	var usageTrend []store.ModelUsageTrend
-	if provider == "aihubmix" {
-		if trend, err := ws.store.GetModelUsageTrend(provider, 14); err == nil {
-			usageTrend = trend
-		} else {
-			log.Printf("apiStats: GetModelUsageTrend(%s): %v", provider, err)
-		}
+	usageTrend := []store.ModelUsageTrend{}
+	if trend, err := ws.store.GetModelUsageTrend(provider, 14); err == nil {
+		usageTrend = trend
+	} else {
+		log.Printf("apiStats: GetModelUsageTrend(%s): %v", provider, err)
 	}
 
 	// Топ-модели (только openrouter — у aihubmix нет shir-man-ранкинга).
@@ -383,6 +381,12 @@ func (ws *WebServer) apiStats(w http.ResponseWriter, r *http.Request) {
 		freeModels = ws.rankingMgr.GetFreeModels()
 	} else {
 		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
+	}
+	if topModels == nil {
+		topModels = []store.DBModel{}
+	}
+	if freeModels == nil {
+		freeModels = []store.DBModel{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -439,6 +443,29 @@ func (ws *WebServer) apiStatsUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, trend)
+}
+
+// GET /api/v2/requests?provider=&limit=100 — последние запросы без payload/body.
+func (ws *WebServer) apiRequests(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	provider, _ := providerFromRequest(r)
+	limit := 100
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 500 {
+		limit = n
+	}
+
+	logs, err := ws.store.GetRequestLog(provider, limit)
+	if err != nil {
+		log.Printf("apiRequests: GetRequestLog(%s, %d): %v", provider, limit, err)
+		writeAPIError(w, http.StatusInternalServerError, "request log failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, logs)
 }
 
 // ---- Ресурс: модели ----

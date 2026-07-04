@@ -104,3 +104,37 @@ func TestGeneralStatsUsesUTCDay(t *testing.T) {
 		t.Fatalf("stats = %+v", stats)
 	}
 }
+
+func TestRequestTrendAndLogUseRequests(t *testing.T) {
+	s, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UTC()
+	for _, r := range []*DBRequest{
+		{Timestamp: now.Add(-time.Hour), KeyHash: "k1", Model: "m1", StatusCode: 200, PromptTokens: 2, CompletionTokens: 3, LatencyMs: 100, TTFTMs: 40, Provider: "openrouter"},
+		{Timestamp: now, KeyHash: "k2", Model: "m2", StatusCode: 429, LatencyMs: 300, TTFTMs: 300, IsStream: true, Provider: "openrouter"},
+	} {
+		if err := s.LogRequest(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	trend, err := s.GetModelUsageTrend("openrouter", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trend) != 1 || trend[0].Requests != 2 || trend[0].Tokens != 5 || trend[0].LatencyAvg != 200 || trend[0].Errors != 1 {
+		t.Fatalf("trend = %+v", trend)
+	}
+
+	log, err := s.GetRequestLog("openrouter", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || !log[0].IsStream {
+		t.Fatalf("log = %+v", log)
+	}
+}

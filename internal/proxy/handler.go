@@ -234,6 +234,16 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		resp, err := ph.client.Do(req)
 		if err != nil {
 			log.Printf("Network error making OpenRouter request: %v", err)
+			if logErr := ph.store.LogRequest(&store.DBRequest{
+				Timestamp:  time.Now(),
+				KeyHash:    keyState.KeyHash,
+				Model:      resolvedModel,
+				StatusCode: 0,
+				LatencyMs:  time.Since(startTime).Milliseconds(),
+				Provider:   "openrouter",
+			}); logErr != nil {
+				log.Printf("Failed to log request to DB: %v", logErr)
+			}
 			keyState.SetCooldown(30*time.Second, "")
 			ph.pool.SyncKeyToDB(keyState)
 			finalErr = err
@@ -248,6 +258,19 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			// Read body to inspect if it's a credit/quota issue or upstream rate limit
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			latencyMs := time.Since(startTime).Milliseconds()
+			if err := ph.store.LogRequest(&store.DBRequest{
+				Timestamp:  time.Now(),
+				KeyHash:    keyState.KeyHash,
+				Model:      resolvedModel,
+				StatusCode: resp.StatusCode,
+				LatencyMs:  latencyMs,
+				TTFTMs:     latencyMs,
+				IsStream:   chatReq.Stream,
+				Provider:   "openrouter",
+			}); err != nil {
+				log.Printf("Failed to log request to DB: %v", err)
+			}
 
 			if resp.StatusCode == http.StatusTooManyRequests && IsUpstreamRateLimit(respBody) {
 				log.Printf("Detected upstream rate-limit for model %s (provider: %s). Fast-failing without putting key %s on cooldown.", resolvedModel, "upstream", keyState.MaskedKey)

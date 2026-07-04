@@ -28,9 +28,11 @@ export default function Stats() {
     refetchInterval: 30_000,
   })
 
-  // ponytail: aihubmix пишет в model_usage, openrouter — нет. Графики пустые для OR,
-  // это норма. Текстовая подсказка объясняет.
-  const noData = provider === 'openrouter'
+  const { data: requests = [], isLoading: requestsLoading } = useQuery({
+    queryKey: ['requestLog', provider],
+    queryFn: () => api.requestLog(provider, 100),
+    refetchInterval: 5_000,
+  })
 
   return (
     <div className="space-y-4">
@@ -54,13 +56,6 @@ export default function Stats() {
           ))}
         </div>
       </div>
-
-      {noData && (
-        <div className="rounded-lg border border-amber-700/40 bg-amber-950/30 px-4 py-2 text-sm text-amber-300">
-          Тренд использования доступен только для AIHubMix. Для OpenRouter
-          метрики не пишутся в model_usage.
-        </div>
-      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Chart
@@ -91,6 +86,70 @@ export default function Stats() {
           dataKey="errors"
           color="#fb7185"
         />
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-slate-800">
+        <div className="border-b border-slate-800 bg-slate-800/40 px-4 py-3">
+          <h3 className="text-sm font-medium text-slate-300">
+            Последние запросы
+          </h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-900/70 text-xs uppercase text-slate-400">
+              <tr>
+                <th className="px-4 py-2 text-left">Время</th>
+                <th className="px-4 py-2 text-left">Модель</th>
+                <th className="px-4 py-2 text-right">Код</th>
+                <th className="px-4 py-2 text-right">Latency</th>
+                <th className="px-4 py-2 text-right">TTFT</th>
+                <th className="px-4 py-2 text-right">Токены</th>
+                <th className="px-4 py-2 text-right">Stream</th>
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map((r) => (
+                <tr key={r.id} className="border-t border-slate-800">
+                  <td className="whitespace-nowrap px-4 py-2 text-xs text-slate-400">
+                    {new Date(r.timestamp).toLocaleString()}
+                  </td>
+                  <td className="max-w-[360px] truncate px-4 py-2 font-mono text-xs text-slate-200">
+                    {r.model}
+                  </td>
+                  <td className={`px-4 py-2 text-right tabular-nums ${r.status_code >= 400 || r.status_code === 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                    {r.status_code || 'net'}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-300">
+                    {r.latency_ms} ms
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-400">
+                    {r.ttft_ms} ms
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-400">
+                    {r.tokens}
+                  </td>
+                  <td className="px-4 py-2 text-right text-slate-400">
+                    {r.is_stream ? 'да' : 'нет'}
+                  </td>
+                </tr>
+              ))}
+              {!requestsLoading && requests.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                    Нет данных
+                  </td>
+                </tr>
+              )}
+              {requestsLoading && requests.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                    Загрузка…
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )

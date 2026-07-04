@@ -42,6 +42,19 @@ export interface ModelUsageTrend {
   errors: number
 }
 
+export interface RequestLogItem {
+  id: number
+  timestamp: string
+  provider: Provider
+  key_hash: string
+  model: string
+  status_code: number
+  tokens: number
+  latency_ms: number
+  ttft_ms: number
+  is_stream: boolean
+}
+
 export interface DBModel {
   id: string
   name: string

@@ -99,6 +99,19 @@ type ModelUsageTrend struct {
 	Errors     int64  `json:"errors"`
 }
 
+type RequestLogItem struct {
+	ID        int64  `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Provider  string `json:"provider"`
+	KeyHash   string `json:"key_hash"`
+	Model     string `json:"model"`
+	Status    int    `json:"status_code"`
+	Tokens    int64  `json:"tokens"`
+	LatencyMs int64  `json:"latency_ms"`
+	TTFTMs    int64  `json:"ttft_ms"`
+	IsStream  bool   `json:"is_stream"`
+}
+
 func HashKey(key string) string {
 	h := sha256.New()
 	h.Write([]byte(key))
@@ -383,42 +396,58 @@ func (s *Store) GetModelUsageStats(provider string, now time.Time) ([]ModelUsage
 // GetModelUsageTrend возвращает агрегированную статистику по всем моделям провайдера
 // за последние `days` суток, отсортированные по возрастанию дня.
 func (s *Store) GetModelUsageTrend(provider string, days int) ([]ModelUsageTrend, error) {
+	if days <= 0 {
+		days = 14
+	}
+	since := time.Now().UTC().AddDate(0, 0, -days+1)
+	since = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC)
 	rows, err := s.db.Query(`
-		SELECT day,
-		       COALESCE(SUM(requests), 0),
-		       COALESCE(SUM(tokens), 0),
-		       CASE WHEN SUM(requests) > 0
-		            THEN CAST(SUM(latency_sum_ms) / SUM(requests) AS INTEGER)
-		            ELSE 0 END,
-		       COALESCE(SUM(errors), 0)
-		FROM model_usage
-		WHERE provider = ?
-		GROUP BY day
-		ORDER BY day DESC
-		LIMIT ?
-	`, provider, days)
+		SELECT timestamp, status_code, prompt_tokens + completion_tokens, latency_ms
+		FROM requests
+		WHERE provider = ? AND timestamp >= ?
+		ORDER BY timestamp ASC
+	`, provider, since)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var desc []ModelUsageTrend
+	byDay := map[string]*ModelUsageTrend{}
+	order := []string{}
 	for rows.Next() {
-		var t ModelUsageTrend
-		if err := rows.Scan(&t.Day, &t.Requests, &t.Tokens, &t.LatencyAvg, &t.Errors); err != nil {
+		var ts time.Time
+		var status int
+		var tokens, latency int64
+		if err := rows.Scan(&ts, &status, &tokens, &latency); err != nil {
 			return nil, err
 		}
-		desc = append(desc, t)
+		day := UTCDay(ts)
+		item := byDay[day]
+		if item == nil {
+			item = &ModelUsageTrend{Day: day}
+			byDay[day] = item
+			order = append(order, day)
+		}
+		item.Requests++
+		item.Tokens += tokens
+		item.LatencyAvg += latency
+		if status >= 400 || status == 0 {
+			item.Errors++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Развернём в хронологическом порядке (старые → новые) для графиков.
-	for i, j := 0, len(desc)-1; i < j; i, j = i+1, j-1 {
-		desc[i], desc[j] = desc[j], desc[i]
+	res := make([]ModelUsageTrend, 0, len(order))
+	for _, day := range order {
+		item := *byDay[day]
+		if item.Requests > 0 {
+			item.LatencyAvg /= item.Requests
+		}
+		res = append(res, item)
 	}
-	return desc, nil
+	return res, nil
 }
 
 func (s *Store) AddKeys(keys []string, provider string) (int, error) {
@@ -575,6 +604,38 @@ func (s *Store) LogRequest(r *DBRequest) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, r.Timestamp, r.KeyHash, r.Model, r.StatusCode, r.PromptTokens, r.CompletionTokens, r.LatencyMs, r.ErrorMsg, r.TTFTMs, isStreamInt, r.Provider)
 	return err
+}
+
+func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, timestamp, provider, key_hash, model, status_code,
+		       prompt_tokens + completion_tokens, latency_ms, ttft_ms, is_stream
+		FROM requests
+		WHERE provider = ?
+		ORDER BY timestamp DESC, id DESC
+		LIMIT ?
+	`, provider, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	res := []RequestLogItem{}
+	for rows.Next() {
+		var item RequestLogItem
+		var ts time.Time
+		var isStream int
+		if err := rows.Scan(&item.ID, &ts, &item.Provider, &item.KeyHash, &item.Model, &item.Status, &item.Tokens, &item.LatencyMs, &item.TTFTMs, &isStream); err != nil {
+			return nil, err
+		}
+		item.Timestamp = ts.UTC().Format(time.RFC3339)
+		item.IsStream = isStream != 0
+		res = append(res, item)
+	}
+	return res, rows.Err()
 }
 
 // ponytail: raw logs are written forever. Purging logic can be added when DB size is a concern.
@@ -815,7 +876,7 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 	}
 	defer rows.Close()
 
-	var res []ModelStats
+	res := []ModelStats{}
 	for rows.Next() {
 		m := ModelStats{}
 		var totalTokens sql.NullInt64
@@ -852,7 +913,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 	}
 	defer rows.Close()
 
-	var res []KeyUsageStats
+	res := []KeyUsageStats{}
 	for rows.Next() {
 		k := KeyUsageStats{}
 		var totalReqs, errReqs sql.NullInt64

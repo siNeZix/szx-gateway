@@ -5,6 +5,7 @@ import type {
   ModelUsageTrend,
   Provider,
   ProviderInfo,
+  RequestLogItem,
   StatsSnapshot,
 } from '../types'
 
@@ -55,6 +56,11 @@ export const api = {
   statsUsage: (provider: Provider, days = 14) =>
     getJSON<ModelUsageTrend[]>(
       `/api/v2/stats/usage?provider=${provider}&range=${days}`,
+    ),
+
+  requestLog: (provider: Provider, limit = 100) =>
+    getJSON<RequestLogItem[]>(
+      `/api/v2/requests?provider=${provider}&limit=${limit}`,
     ),
 
   models: (provider: Provider) =>
