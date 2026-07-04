@@ -64,7 +64,7 @@ func TestTryReserveWindowRolls(t *testing.T) {
 	}
 }
 
-// Daily usage resets when the calendar day changes (local time).
+// Daily usage resets when the UTC calendar day changes.
 func TestResetDailyUsageIfNewDay(t *testing.T) {
 	ks := newState(20)
 	ks.LastUsedAt = time.Now().Add(-48 * time.Hour)
@@ -82,6 +82,16 @@ func TestResetDailyUsageIfNewDay(t *testing.T) {
 	}
 }
 
+func TestResetDailyUsageUsesUTC(t *testing.T) {
+	ks := newState(20)
+	ks.LastUsedAt = time.Now().UTC().In(time.FixedZone("UTC+14", 14*3600))
+	ks.UsageToday = 10
+
+	if ks.ResetDailyUsageIfNewDay() {
+		t.Fatal("same UTC day must not reset usage")
+	}
+}
+
 func TestDisabledKeyNotUsable(t *testing.T) {
 	ks := newState(20)
 	ks.Status = "disabled"
@@ -95,8 +105,7 @@ func TestDisabledKeyNotUsable(t *testing.T) {
 	}
 }
 
-// Превентивная блокировка: ключ с MaxLimit=10 и UsageToday=10 не выдаётся,
-// но статус остаётся active (day_exhausted ставится только при детекте заглушки).
+// Превентивная блокировка: ключ с MaxLimit=10 и UsageToday=10 не выдаётся.
 func TestPreventiveDayLimitBlock(t *testing.T) {
 	ks := newState(20)
 	ks.MaxLimit = 10
@@ -110,8 +119,54 @@ func TestPreventiveDayLimitBlock(t *testing.T) {
 	if ks.TryReserve(now) {
 		t.Fatal("should not reserve a key at MaxLimit")
 	}
-	if ks.Status == "day_exhausted" {
-		t.Fatal("preventive block must not change status to day_exhausted")
+}
+
+func TestReserveAtMaxLimitMarksDayExhausted(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 9
+	now := time.Now()
+
+	if !ks.TryReserve(now) {
+		t.Fatal("10th request should pass")
+	}
+	if ks.Status != "day_exhausted" {
+		t.Fatalf("status = %s, want day_exhausted", ks.Status)
+	}
+	if ks.TryReserve(now) {
+		t.Fatal("11th request must not pass")
+	}
+}
+
+func TestRollbackUsageReactivatesExhaustedKey(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 9
+	if !ks.TryReserve(time.Now()) {
+		t.Fatal("10th request should pass")
+	}
+
+	ks.RollbackUsage()
+
+	if ks.UsageToday != 9 {
+		t.Fatalf("UsageToday = %d, want 9", ks.UsageToday)
+	}
+	if ks.Status != "active" {
+		t.Fatalf("status = %s, want active", ks.Status)
+	}
+}
+
+func TestReserveModelAtMaxLimitMarksDayExhausted(t *testing.T) {
+	ks := newState(20)
+	ks.MaxLimit = 10
+	ks.UsageToday = 9
+	now := time.Now()
+
+	if !ks.TryReserveModel(now, "m", 20) {
+		t.Fatal("10th model request should pass")
+	}
+	if ks.Status != "day_exhausted" {
+		t.Fatalf("status = %s, want day_exhausted", ks.Status)
 	}
 }
 

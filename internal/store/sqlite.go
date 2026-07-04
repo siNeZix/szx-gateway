@@ -743,6 +743,7 @@ type GeneralStats struct {
 
 type ModelStats struct {
 	Model         string `json:"model"`
+	TodayRequests int64  `json:"today_requests"`
 	TotalRequests int64  `json:"total_requests"`
 	AvgLatencyMs  int64  `json:"avg_latency_ms"`
 	TotalTokens   int64  `json:"total_tokens"`
@@ -757,6 +758,7 @@ type KeyUsageStats struct {
 	TotalRequests int64     `json:"total_requests"`
 	ErrorRequests int64     `json:"error_requests"`
 	CooldownUntil time.Time `json:"cooldown_until"`
+	LastUsedAt    time.Time `json:"last_used_at"`
 }
 
 func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
@@ -783,9 +785,8 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 		return nil, err
 	}
 
-	// Local midnight, matching the per-key daily reset (KeyState.ResetDailyUsageIfNewDay).
-	now := time.Now()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND provider = ?`, todayStart, provider).Scan(&stats.TodayRequests)
 	if err != nil {
 		return nil, err
@@ -795,17 +796,20 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 }
 
 func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	rows, err := s.db.Query(`
 		SELECT 
 			model, 
+			COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0),
 			COUNT(*), 
 			CAST(AVG(latency_ms) AS INTEGER), 
 			SUM(prompt_tokens + completion_tokens) 
 		FROM requests
 		WHERE provider = ?
 		GROUP BY model 
-		ORDER BY COUNT(*) DESC
-	`, provider)
+		ORDER BY 2 DESC, COUNT(*) DESC
+	`, todayStart, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +819,7 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 	for rows.Next() {
 		m := ModelStats{}
 		var totalTokens sql.NullInt64
-		err := rows.Scan(&m.Model, &m.TotalRequests, &m.AvgLatencyMs, &totalTokens)
+		err := rows.Scan(&m.Model, &m.TodayRequests, &m.TotalRequests, &m.AvgLatencyMs, &totalTokens)
 		if err != nil {
 			return nil, err
 		}
@@ -834,6 +838,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 			k.usage_today, 
 			k.max_limit, 
 			k.cooldown_until,
+			k.last_used_at,
 			COUNT(r.id) as total_reqs,
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) as err_reqs
 		FROM keys k
@@ -852,7 +857,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 		k := KeyUsageStats{}
 		var totalReqs, errReqs sql.NullInt64
 		err := rows.Scan(
-			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil,
+			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil, &k.LastUsedAt,
 			&totalReqs, &errReqs,
 		)
 		if err != nil {

@@ -67,11 +67,12 @@ export default function Dashboard() {
         <div className="overflow-hidden rounded-xl border border-slate-800">
           <table className="w-full text-sm">
             <thead className="bg-slate-800/60 text-xs uppercase text-slate-400">
-              <tr>
-                <th className="px-4 py-2 text-left">Модель</th>
-                <th className="px-4 py-2 text-right">Запросов</th>
-                <th className="px-4 py-2 text-right">Токенов</th>
-                <th className="px-4 py-2 text-right">Avg latency</th>
+                <tr>
+                  <th className="px-4 py-2 text-left">Модель</th>
+                  <th className="px-4 py-2 text-right">Сегодня</th>
+                  <th className="px-4 py-2 text-right">Запросов</th>
+                  <th className="px-4 py-2 text-right">Токенов</th>
+                  <th className="px-4 py-2 text-right">Avg latency</th>
               </tr>
             </thead>
             <tbody>
@@ -79,6 +80,9 @@ export default function Dashboard() {
                 <tr key={m.model} className="border-t border-slate-800">
                   <td className="px-4 py-2 font-mono text-xs text-slate-200">
                     {m.model}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-emerald-400">
+                    {m.today_requests}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums">
                     {m.total_requests}
@@ -93,7 +97,7 @@ export default function Dashboard() {
               ))}
               {data.models.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
                     Нет данных
                   </td>
                 </tr>

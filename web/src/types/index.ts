@@ -15,6 +15,7 @@ export interface GeneralStats {
 
 export interface ModelStats {
   model: string
+  today_requests: number
   total_requests: number
   avg_latency_ms: number
   total_tokens: number
@@ -30,6 +31,7 @@ export interface KeyUsageStats {
   error_requests: number
   cooldown_left: string
   cooldown_until: string // ISO-время; пусто если never
+  last_used_at: string // ISO-время; пусто если never
 }
 
 export interface ModelUsageTrend {

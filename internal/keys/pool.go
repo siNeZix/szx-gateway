@@ -158,42 +158,7 @@ func (kp *KeyPool) GetBestKey() (*KeyState, error) {
 		}
 
 		if best == nil {
-			// ponytail: fallback — все ключи превентивно заблокированы по MaxLimit
-			// (AIHubMix: все сделали 10/10). Пытаемся 11-м запросом — прокси ловит
-			// 200-заглушку → MarkDayExhausted. Выбираем с наименьшим usage и не
-			// блокируемыми статусами (invalid/disabled/day_exhausted исключаются).
-			var fb *KeyState
-			var fbUsage int64
-			for _, k := range kp.keys {
-				if tried[k] {
-					continue
-				}
-				k.mu.Lock()
-				status := k.Status
-				cooldown := k.CooldownUntil
-				usage := k.UsageToday
-				maxLimit := k.MaxLimit
-				k.mu.Unlock()
-				if status == "invalid" || status == "disabled" || status == "day_exhausted" {
-					continue
-				}
-				if cooldown.After(now) {
-					continue
-				}
-				if maxLimit <= 0 || usage < maxLimit {
-					continue // ещё не исчерпан — первый проход должен был его найти
-				}
-				if fb == nil || usage < fbUsage {
-					fb, fbUsage = k, usage
-				}
-			}
-			if fb == nil {
-				return nil, fmt.Errorf("all keys are rate limited, exhausted or in cooldown (pool size: %d)", len(kp.keys))
-			}
-			// ponytail: диагностический 11-й запрос — регистрируем без проверки usable,
-			// чтобы прокси получил реальный ответ AIHubMix и пометил ключ через MarkDayExhausted.
-			fb.RegisterRequest(now)
-			return fb, nil
+			return nil, fmt.Errorf("all keys are rate limited, exhausted or in cooldown (pool size: %d)", len(kp.keys))
 		}
 
 		if best.TryReserve(now) {
@@ -234,43 +199,7 @@ func (kp *KeyPool) GetBestKeyForModel(model string) (*KeyState, error) {
 		}
 
 		if best == nil {
-			// ponytail: fallback — все ключи превентивно заблокированы по MaxLimit=10.
-			// Пытаемся 11-м запросом — прокси ловит 200-заглушку → MarkDayExhausted.
-			var fb *KeyState
-			var fbUsage int64
-			for _, k := range kp.keys {
-				if tried[k] {
-					continue
-				}
-				k.mu.Lock()
-				status := k.Status
-				cooldown := k.CooldownUntil
-				usage := k.UsageToday
-				maxLimit := k.MaxLimit
-				k.mu.Unlock()
-				if status == "invalid" || status == "disabled" || status == "day_exhausted" {
-					continue
-				}
-				if cooldown.After(now) {
-					continue
-				}
-				if maxLimit <= 0 || usage < maxLimit {
-					continue // ещё не исчерпан — первый проход должен был его найти
-				}
-				if !k.CanUseModel(now, model) {
-					continue
-				}
-				if fb == nil || usage < fbUsage {
-					fb, fbUsage = k, usage
-				}
-			}
-			if fb == nil {
-				return nil, fmt.Errorf("all keys are exhausted, rate limited or in cooldown for model %s (pool size: %d)", model, len(kp.keys))
-			}
-			// ponytail: диагностический 11-й запрос — регистрируем без проверки usable,
-			// чтобы прокси получил реальный ответ AIHubMix и пометил ключ через MarkDayExhausted.
-			fb.RegisterRequest(now)
-			return fb, nil
+			return nil, fmt.Errorf("all keys are exhausted, rate limited or in cooldown for model %s (pool size: %d)", model, len(kp.keys))
 		}
 
 		if best.TryReserveModel(now, model, limit.RPM) {

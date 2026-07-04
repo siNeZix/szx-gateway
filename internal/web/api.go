@@ -144,6 +144,7 @@ func (ws *WebServer) apiKeys(w http.ResponseWriter, r *http.Request) {
 		ErrorRequests int64  `json:"error_requests"`
 		CooldownLeft  string `json:"cooldown_left"`  // человекочитаемое время; пусто если не на кулдауне
 		CooldownUntil string `json:"cooldown_until"` // ISO-время для фронтенд-форматирования; пусто если never
+		LastUsedAt    string `json:"last_used_at"`   // ISO-время; пусто если never
 	}
 
 	out := make([]keyItem, 0, len(stats))
@@ -154,11 +155,15 @@ func (ws *WebServer) apiKeys(w http.ResponseWriter, r *http.Request) {
 
 		cooldownLeft := ""
 		cooldownUntil := ""
+		lastUsedAt := ""
 		if !k.CooldownUntil.IsZero() && k.CooldownUntil.Unix() > 0 {
 			cooldownUntil = k.CooldownUntil.Format(time.RFC3339)
 			if k.CooldownUntil.After(now) {
 				cooldownLeft = time.Until(k.CooldownUntil).Truncate(time.Second).String()
 			}
+		}
+		if !k.LastUsedAt.IsZero() && k.LastUsedAt.Unix() > 0 {
+			lastUsedAt = k.LastUsedAt.Format(time.RFC3339)
 		}
 
 		out = append(out, keyItem{
@@ -171,6 +176,7 @@ func (ws *WebServer) apiKeys(w http.ResponseWriter, r *http.Request) {
 			ErrorRequests: k.ErrorRequests,
 			CooldownLeft:  cooldownLeft,
 			CooldownUntil: cooldownUntil,
+			LastUsedAt:    lastUsedAt,
 		})
 	}
 

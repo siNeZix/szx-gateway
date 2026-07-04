@@ -18,6 +18,13 @@ import type { KeyUsageStats } from '../types'
 const STATUS_FILTERS = ['all', 'active', 'unchecked', 'rate_limited', 'day_exhausted', 'disabled', 'invalid']
 const PAGE_SIZE = 50
 
+function formatLastUsed(value: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString()
+}
+
 export default function Keys() {
   const { provider } = useProvider()
   const queryClient = useQueryClient()
@@ -102,10 +109,12 @@ export default function Keys() {
       {
         id: 'limit',
         header: 'Лимит',
+        accessorFn: (k) => k.limit,
         cell: (info) => {
           const k = info.row.original
+          const nearLimit = k.limit > 0 && k.limit - k.today_usage <= 2
           return (
-            <span className="tabular-nums text-slate-400">
+            <span className={`tabular-nums ${nearLimit ? 'text-amber-400' : 'text-slate-400'}`}>
               {k.today_usage}/{k.limit || '∞'}
             </span>
           )
@@ -121,13 +130,15 @@ export default function Keys() {
         ),
       },
       {
-        accessorKey: 'error_requests',
+        id: 'error_rate',
         header: 'Ошибок',
+        accessorFn: (k) => (k.total_requests > 0 ? k.error_requests / k.total_requests : -1),
         cell: (info) => {
-          const n = info.getValue() as number
+          const k = info.row.original
+          const rate = k.total_requests > 0 ? (k.error_requests / k.total_requests) * 100 : 0
           return (
-            <span className={`tabular-nums ${n > 0 ? 'text-rose-400' : 'text-slate-500'}`}>
-              {n}
+            <span className={`tabular-nums ${rate > 10 ? 'text-rose-400' : 'text-slate-500'}`}>
+              {k.total_requests > 0 ? `${rate.toFixed(1)}%` : '—'}
             </span>
           )
         },
@@ -143,6 +154,15 @@ export default function Keys() {
             <span className="text-slate-600">—</span>
           )
         },
+      },
+      {
+        accessorKey: 'last_used_at',
+        header: 'Last used',
+        cell: (info) => (
+          <span className="whitespace-nowrap text-xs text-slate-400">
+            {formatLastUsed(info.getValue() as string)}
+          </span>
+        ),
       },
     ],
     [selected, filtered],

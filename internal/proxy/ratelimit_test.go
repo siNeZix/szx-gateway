@@ -29,3 +29,29 @@ func TestIsUpstreamRateLimit(t *testing.T) {
 		t.Error("expected false for credit exhausted")
 	}
 }
+
+func TestClassifyAIHubMixError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   aihubmixErrorAction
+	}{
+		{"provider rate limit", 429, `{"error":{"message":"[429]: Model coding-glm-5.2-free rate limited by provider – contact support to request higher concurrency or try again later. (tid: 1)"}}`, aihubmixReturnToClient},
+		{"model too many requests", 429, `{"error":{"message":"The coding-glm-5.2-free model Too many requests; please try again later."}}`, aihubmixReturnToClient},
+		{"no channel", 503, `{"error":{"message":"No available channel for this model"}}`, aihubmixReturnToClient},
+		{"bad model", 503, `{"error":{"message":"Incorrect model ID. Please request to view the model page or you do not have permission to use this model"}}`, aihubmixReturnToClient},
+		{"invalid token", 401, `{"error":{"message":"Unauthorized – access token is invalid or expired."}}`, aihubmixRetryInvalidKey},
+		{"disabled key", 403, `{"error":{"message":"key is disabled"}}`, aihubmixRetryInvalidKey},
+		{"quota", 403, `{"error":{"code":"insufficient_user_quota","message":"Your account balance is insufficient. Please recharge your account."}}`, aihubmixRetryAccountLimit},
+		{"key model", 403, `{"error":{"message":"Forbidden – key abc123 not authorized to access the requested model."}}`, aihubmixRetryKeyModelLimit},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyAIHubMixError(tt.status, []byte(tt.body)); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
