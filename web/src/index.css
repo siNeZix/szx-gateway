@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Тёмная тема по умолчанию, как в старом дашборде (slate-900). */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: #0f172a; /* slate-900 */
+  color: #e2e8f0; /* slate-200 */
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}

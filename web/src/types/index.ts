@@ -1,0 +1,81 @@
+// Контракты API. Ручная синхронизация с Go-структурами в internal/store/sqlite.go
+// и internal/web/api.go. Единый конверт { data, error } разворачивается в apiClient.
+
+export type Provider = 'openrouter' | 'aihubmix'
+
+export interface GeneralStats {
+  total_requests: number
+  today_requests: number
+  active_keys: number
+  blocked_keys: number
+  invalid_keys: number
+  unchecked_keys: number
+  total_keys: number
+}
+
+export interface ModelStats {
+  model: string
+  total_requests: number
+  avg_latency_ms: number
+  total_tokens: number
+}
+
+export interface KeyUsageStats {
+  masked_key: string
+  key_hash: string
+  status: string
+  today_usage: number
+  limit: number
+  total_requests: number
+  error_requests: number
+  cooldown_left: string
+  cooldown_until: string // ISO-время; пусто если never
+}
+
+export interface ModelUsageTrend {
+  day: string
+  requests: number
+  tokens: number
+  latency_avg_ms: number
+  errors: number
+}
+
+export interface DBModel {
+  id: string
+  name: string
+  rank: number
+  context_length: number
+  max_output: number
+  type: string
+  features: string
+  modalities: string
+  input_price: number
+  output_price: number
+  description: string
+  updated_at: string
+}
+
+export interface ProviderInfo {
+  id: string
+  name: string
+  base_url: string
+  total_keys: number
+  active_keys: number
+}
+
+// Обёрнутый ответ /api/v2/stats (общий снимок).
+export interface StatsSnapshot {
+  general: GeneralStats
+  models: ModelStats[]
+  keys: KeyUsageStats[]
+  top_models: DBModel[]
+  free_models: DBModel[]
+  usage_trend: ModelUsageTrend[]
+  refreshed_at: string
+}
+
+// Ответ /api/v2/models.
+export interface ModelsResponse {
+  top_models: DBModel[]
+  free_models: DBModel[]
+}

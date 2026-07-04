@@ -50,6 +50,7 @@ func (ws *WebServer) Start(mux *http.ServeMux) {
 	mux.HandleFunc("/keys/add", ws.basicAuth(ws.handleKeysAdd))
 	mux.HandleFunc("/keys/delete", ws.basicAuth(ws.handleKeysDelete))
 	mux.HandleFunc("/keys/bulk", ws.basicAuth(ws.handleKeysBulk))
+	ws.registerAPIRoutes(mux)
 }
 
 func (ws *WebServer) basicAuth(next http.HandlerFunc) http.HandlerFunc {

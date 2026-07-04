@@ -17,6 +17,13 @@
 accounts/api_keys.txt
 .env
 
+# Worktrees (скрипт worktree skill: глобальный skill "worktree")
+/.worktrees/
+
+# SPA build artifacts (встроенный UI генерится Vite, не коммитится)
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
+
 # OS/IDEs
 .idea/
 .vscode/

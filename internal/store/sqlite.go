@@ -15,19 +15,19 @@ type Store struct {
 }
 
 type DBKey struct {
-	KeyHash           string
-	MaskedKey         string
-	Status            string
-	LimitRemaining    int64
-	UsageToday        int64
-	MaxLimit          int64
-	IsFreeTier        bool
-	RateLimitReq      int
-	RateLimitInterval string
-	CooldownUntil     time.Time
-	LastCheckedAt     time.Time
-	LastUsedAt        time.Time
-	RawKey            string
+	KeyHash           string    `json:"key_hash"`
+	MaskedKey         string    `json:"masked_key"`
+	Status            string    `json:"status"`
+	LimitRemaining    int64     `json:"limit_remaining"`
+	UsageToday        int64     `json:"usage_today"`
+	MaxLimit          int64     `json:"max_limit"`
+	IsFreeTier        bool      `json:"is_free_tier"`
+	RateLimitReq      int       `json:"rate_limit_req"`
+	RateLimitInterval string    `json:"rate_limit_interval"`
+	CooldownUntil     time.Time `json:"cooldown_until"`
+	LastCheckedAt     time.Time `json:"last_checked_at"`
+	LastUsedAt        time.Time `json:"last_used_at"`
+	RawKey            string    `json:"-"` // критично: никогда не отдаём сырой ключ в API
 }
 
 type DBRequest struct {
@@ -59,18 +59,18 @@ type DBRateLimit struct {
 }
 
 type DBModel struct {
-	ID            string
-	Name          string
-	Rank          int
-	ContextLength int64
-	MaxOutput     int64
-	Type          string
-	Features      string
-	Modalities    string
-	InputPrice    float64
-	OutputPrice   float64
-	Description   string
-	UpdatedAt     time.Time
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Rank          int       `json:"rank"`
+	ContextLength int64     `json:"context_length"`
+	MaxOutput     int64     `json:"max_output"`
+	Type          string    `json:"type"`
+	Features      string    `json:"features"`
+	Modalities    string    `json:"modalities"`
+	InputPrice    float64   `json:"input_price"`
+	OutputPrice   float64   `json:"output_price"`
+	Description   string    `json:"description"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type ModelUsage struct {
@@ -732,31 +732,31 @@ func (s *Store) GetCachedAihubmixFreeModels() ([]DBModel, error) {
 
 // Stats helper structures
 type GeneralStats struct {
-	TotalRequests int64
-	TodayRequests int64
-	ActiveKeys    int
-	BlockedKeys   int
-	InvalidKeys   int
-	UncheckedKeys int
-	TotalKeys     int
+	TotalRequests int64 `json:"total_requests"`
+	TodayRequests int64 `json:"today_requests"`
+	ActiveKeys    int   `json:"active_keys"`
+	BlockedKeys   int   `json:"blocked_keys"`
+	InvalidKeys   int   `json:"invalid_keys"`
+	UncheckedKeys int   `json:"unchecked_keys"`
+	TotalKeys     int   `json:"total_keys"`
 }
 
 type ModelStats struct {
-	Model         string
-	TotalRequests int64
-	AvgLatencyMs  int64
-	TotalTokens   int64
+	Model         string `json:"model"`
+	TotalRequests int64  `json:"total_requests"`
+	AvgLatencyMs  int64  `json:"avg_latency_ms"`
+	TotalTokens   int64  `json:"total_tokens"`
 }
 
 type KeyUsageStats struct {
-	MaskedKey     string
-	KeyHash       string
-	Status        string
-	TodayUsage    int64
-	Limit         int64
-	TotalRequests int64
-	ErrorRequests int64
-	CooldownUntil time.Time
+	MaskedKey     string    `json:"masked_key"`
+	KeyHash       string    `json:"key_hash"`
+	Status        string    `json:"status"`
+	TodayUsage    int64     `json:"today_usage"`
+	Limit         int64     `json:"limit"`
+	TotalRequests int64     `json:"total_requests"`
+	ErrorRequests int64     `json:"error_requests"`
+	CooldownUntil time.Time `json:"cooldown_until"`
 }
 
 func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
