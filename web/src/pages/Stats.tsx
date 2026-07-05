@@ -227,7 +227,7 @@ export default function Stats() {
                     {r.status_code || 'net'}
                   </td>
                   <td className="max-w-[280px] truncate px-4 py-2 text-xs text-rose-300" title={r.status_text}>
-                    {r.status_text || '—'}
+                    {r.status_code === 200 ? '' : r.status_text || '—'}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums text-slate-300">
                     {r.latency_ms} ms
