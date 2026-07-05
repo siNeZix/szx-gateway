@@ -423,7 +423,12 @@ func statusText(resp *http.Response) string {
 	if resp.StatusCode < 400 && resp.StatusCode != 0 {
 		return ""
 	}
-	return resp.Status
+	// ponytail: upstream может прислать статус-строку без reason phrase,
+	// тогда resp.Status пустой — фолбэчим на stdlib-текст по коду.
+	if s := strings.TrimSpace(resp.Status); s != "" {
+		return s
+	}
+	return http.StatusText(resp.StatusCode)
 }
 
 func usageTokens(data []byte) int64 {
