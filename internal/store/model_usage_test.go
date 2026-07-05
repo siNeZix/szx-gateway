@@ -136,7 +136,7 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || log[0].ErrorMsg != "rate limited" || !log[0].IsStream {
+	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || log[0].StatusText != "rate limited" || !log[0].IsStream {
 		t.Fatalf("log = %+v", log)
 	}
 }

@@ -152,8 +152,8 @@ export default function Stats() {
               <tr>
                 <th className="px-4 py-2 text-left">Время</th>
                 <th className="px-4 py-2 text-left">Модель</th>
-                <th className="px-4 py-2 text-left">Ошибка</th>
                 <th className="px-4 py-2 text-right">Код</th>
+                <th className="px-4 py-2 text-left">Текст статуса</th>
                 <th className="px-4 py-2 text-right">Latency</th>
                 <th className="px-4 py-2 text-right">TTFT</th>
                 <th className="px-4 py-2 text-right">Токены</th>
@@ -169,11 +169,11 @@ export default function Stats() {
                   <td className="max-w-[360px] truncate px-4 py-2 font-mono text-xs text-slate-200">
                     {r.model}
                   </td>
-                  <td className="max-w-[280px] truncate px-4 py-2 text-xs text-rose-300" title={r.error_msg}>
-                    {r.error_msg || '—'}
-                  </td>
                   <td className={`px-4 py-2 text-right tabular-nums ${r.status_code >= 400 || r.status_code === 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                     {r.status_code || 'net'}
+                  </td>
+                  <td className="max-w-[280px] truncate px-4 py-2 text-xs text-rose-300" title={r.status_text}>
+                    {r.status_text || '—'}
                   </td>
                   <td className="px-4 py-2 text-right tabular-nums text-slate-300">
                     {r.latency_ms} ms

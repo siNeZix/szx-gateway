@@ -109,17 +109,17 @@ type UsageBucket struct {
 }
 
 type RequestLogItem struct {
-	ID        int64  `json:"id"`
-	Timestamp string `json:"timestamp"`
-	Provider  string `json:"provider"`
-	KeyHash   string `json:"key_hash"`
-	Model     string `json:"model"`
-	Status    int    `json:"status_code"`
-	ErrorMsg  string `json:"error_msg"`
-	Tokens    int64  `json:"tokens"`
-	LatencyMs int64  `json:"latency_ms"`
-	TTFTMs    int64  `json:"ttft_ms"`
-	IsStream  bool   `json:"is_stream"`
+	ID         int64  `json:"id"`
+	Timestamp  string `json:"timestamp"`
+	Provider   string `json:"provider"`
+	KeyHash    string `json:"key_hash"`
+	Model      string `json:"model"`
+	Status     int    `json:"status_code"`
+	StatusText string `json:"status_text"`
+	Tokens     int64  `json:"tokens"`
+	LatencyMs  int64  `json:"latency_ms"`
+	TTFTMs     int64  `json:"ttft_ms"`
+	IsStream   bool   `json:"is_stream"`
 }
 
 func HashKey(key string) string {
@@ -713,7 +713,7 @@ func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, err
 		var item RequestLogItem
 		var ts time.Time
 		var isStream int
-		if err := rows.Scan(&item.ID, &ts, &item.Provider, &item.KeyHash, &item.Model, &item.Status, &item.ErrorMsg, &item.Tokens, &item.LatencyMs, &item.TTFTMs, &isStream); err != nil {
+		if err := rows.Scan(&item.ID, &ts, &item.Provider, &item.KeyHash, &item.Model, &item.Status, &item.StatusText, &item.Tokens, &item.LatencyMs, &item.TTFTMs, &isStream); err != nil {
 			return nil, err
 		}
 		item.Timestamp = ts.UTC().Format(time.RFC3339)

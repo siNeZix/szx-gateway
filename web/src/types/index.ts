@@ -57,7 +57,7 @@ export interface RequestLogItem {
   key_hash: string
   model: string
   status_code: number
-  error_msg: string
+  status_text: string
   tokens: number
   latency_ms: number
   ttft_ms: number

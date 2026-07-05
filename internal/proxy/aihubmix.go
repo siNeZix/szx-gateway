@@ -408,6 +408,7 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 		KeyHash:          ks.KeyHash,
 		Model:            model,
 		StatusCode:       resp.StatusCode,
+		ErrorMsg:         statusText(resp),
 		CompletionTokens: int(tokens),
 		LatencyMs:        latencyMs,
 		TTFTMs:           ttftMs,
@@ -416,6 +417,13 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	}); err != nil {
 		log.Printf("[AIHubMix] failed to log request: %v", err)
 	}
+}
+
+func statusText(resp *http.Response) string {
+	if resp.StatusCode < 400 && resp.StatusCode != 0 {
+		return ""
+	}
+	return resp.Status
 }
 
 func usageTokens(data []byte) int64 {

@@ -239,6 +239,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				KeyHash:    keyState.KeyHash,
 				Model:      resolvedModel,
 				StatusCode: 0,
+				ErrorMsg:   err.Error(),
 				LatencyMs:  time.Since(startTime).Milliseconds(),
 				Provider:   "openrouter",
 			}); logErr != nil {
@@ -264,6 +265,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				KeyHash:    keyState.KeyHash,
 				Model:      resolvedModel,
 				StatusCode: resp.StatusCode,
+				ErrorMsg:   resp.Status,
 				LatencyMs:  latencyMs,
 				TTFTMs:     latencyMs,
 				IsStream:   chatReq.Stream,
