@@ -14,6 +14,7 @@ import (
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
 	"openrouter-gateway/internal/models"
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/store"
 	"openrouter-gateway/internal/web"
 )
@@ -90,7 +91,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// RankingManager не стартуем — нужен только как zero-value для API.
 	rm := models.NewRankingManager(s, 0)
 
-	ws := web.NewWebServer(cfg, s, rm, pools)
+	ws := web.NewWebServer(cfg, s, rm, pools, proxies.NewPool(s))
 	mux := http.NewServeMux()
 	ws.Start(mux)
 

@@ -5,6 +5,11 @@ import type {
   ModelUsageTrend,
   Provider,
   ProviderInfo,
+  ProxyItem,
+  ProxyLogItem,
+  ProxySettings,
+  ProxyStats,
+  ProxyUsageBucket,
   RequestLogItem,
   StatsSnapshot,
   UsageBucket,
@@ -99,4 +104,33 @@ export const api = {
       hashes,
       action,
     }),
+
+  proxies: () => getJSON<ProxyItem[]>('/api/v2/proxies'),
+
+  addProxies: (scheme: 'http' | 'https' | 'socks5', proxies: string[]) =>
+    postJSON<{ added: number; checked: number }>('/api/v2/proxies', {
+      scheme,
+      proxies,
+    }),
+
+  bulkProxies: (
+    ids: number[],
+    action: 'enable' | 'disable' | 'delete' | 'recheck',
+  ) =>
+    postJSON<{ action: string; affected: number }>('/api/v2/proxies/bulk', {
+      ids,
+      action,
+    }),
+
+  proxySettings: () => getJSON<ProxySettings[]>('/api/v2/proxy-settings'),
+
+  saveProxySettings: (settings: ProxySettings) =>
+    postJSON<ProxySettings>('/api/v2/proxy-settings', settings),
+
+  proxyLogs: (limit = 100) =>
+    getJSON<ProxyLogItem[]>(`/api/v2/proxies/logs?limit=${limit}`),
+
+  proxyStats: () => getJSON<ProxyStats>('/api/v2/proxies/stats'),
+
+  proxyUsage5m: () => getJSON<ProxyUsageBucket[]>('/api/v2/proxies/usage/5m'),
 }

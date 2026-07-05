@@ -16,6 +16,7 @@ import (
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
 	"openrouter-gateway/internal/models"
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/store"
 )
 
@@ -25,6 +26,7 @@ type ProxyHandler struct {
 	pool       *keys.KeyPool
 	rankingMgr *models.RankingManager
 	client     *http.Client
+	proxyPool  *proxies.Pool
 }
 
 type ChatCompletionsRequest struct {
@@ -33,13 +35,14 @@ type ChatCompletionsRequest struct {
 	// We preserve other fields as-is using dynamic mapping or raw JSON
 }
 
-func NewProxyHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager) *ProxyHandler {
+func NewProxyHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager, proxyPool *proxies.Pool) *ProxyHandler {
 	return &ProxyHandler{
 		cfg:        cfg,
 		store:      s,
 		pool:       p,
 		rankingMgr: rm,
 		client:     &http.Client{Timeout: 10 * time.Minute}, // Large timeout for streaming/reasoning
+		proxyPool:  proxyPool,
 	}
 }
 
@@ -202,6 +205,8 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	// Execute request with retries over different keys
 	var finalErr error
+	settings, _ := ph.store.GetProxySettings("openrouter")
+	proxyAfter429 := false
 	for attempt := 1; attempt <= ph.cfg.MaxKeyRetries; attempt++ {
 		keyState, err := ph.pool.GetBestKey()
 		if err != nil {
@@ -231,8 +236,15 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 		// We must not set connection close, let client decide or keepalive
 		startTime := time.Now()
-		resp, err := ph.client.Do(req)
+		client := ph.client
+		usingProxy := settings.UseForRequests && proxies.ShouldUse(settings, proxyAfter429)
+		var proxyID int64
+		if usingProxy {
+			client, proxyID = ph.proxyPool.Client(true, 10*time.Minute)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
+			ph.logProxy(proxyID, int64(len(bodyBytes)), 0, 0, false, err.Error(), startTime)
 			log.Printf("Network error making OpenRouter request: %v", err)
 			if logErr := ph.store.LogRequest(&store.DBRequest{
 				Timestamp:  time.Now(),
@@ -259,6 +271,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			// Read body to inspect if it's a credit/quota issue or upstream rate limit
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			ph.logProxy(proxyID, int64(len(bodyBytes)), int64(len(respBody)), resp.StatusCode, resp.StatusCode < 500, resp.Status, startTime)
 			latencyMs := time.Since(startTime).Milliseconds()
 			if err := ph.store.LogRequest(&store.DBRequest{
 				Timestamp:  time.Now(),
@@ -275,6 +288,14 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}
 
 			if resp.StatusCode == http.StatusTooManyRequests && IsUpstreamRateLimit(respBody) {
+				if settings.UseForRequests && settings.Mode == "after_429" && !usingProxy {
+					log.Printf("Detected upstream rate-limit for model %s, retrying through proxy.", resolvedModel)
+					keyState.RollbackUsage()
+					ph.pool.SyncKeyToDB(keyState)
+					proxyAfter429 = true
+					finalErr = fmt.Errorf("upstream rate-limit, retrying through proxy")
+					continue
+				}
 				log.Printf("Detected upstream rate-limit for model %s (provider: %s). Fast-failing without putting key %s on cooldown.", resolvedModel, "upstream", keyState.MaskedKey)
 				// Set headers and forward the upstream 429 directly to client
 				for k, v := range resp.Header {
@@ -308,9 +329,9 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		defer resp.Body.Close()
 
 		if chatReq.Stream {
-			ph.handleStreamResponse(w, resp, keyState, resolvedModel, startTime)
+			ph.handleStreamResponse(w, resp, keyState, resolvedModel, startTime, proxyID, int64(len(bodyBytes)))
 		} else {
-			ph.handleNormalResponse(w, resp, keyState, resolvedModel, startTime)
+			ph.handleNormalResponse(w, resp, keyState, resolvedModel, startTime, proxyID, int64(len(bodyBytes)))
 		}
 		return
 	}
@@ -320,10 +341,11 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	http.Error(w, fmt.Sprintf(`{"error":{"message":"Gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
 }
 
-func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.Response, ks *keys.KeyState, model string, startTime time.Time) {
+func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.Response, ks *keys.KeyState, model string, startTime time.Time, proxyID, requestBytes int64) {
 	// Read body
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		ph.logProxy(proxyID, requestBytes, 0, resp.StatusCode, false, err.Error(), startTime)
 		log.Printf("Failed to read response body: %v", err)
 		http.Error(w, `{"error":{"message":"Failed to read response from upstream"}}`, http.StatusBadGateway)
 		return
@@ -337,6 +359,7 @@ func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.R
 	}
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
+	ph.logProxy(proxyID, requestBytes, int64(len(respBody)), resp.StatusCode, true, "", startTime)
 
 	// Parse Usage
 	var promptTokens, completionTokens int
@@ -372,7 +395,7 @@ func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.R
 	}
 }
 
-func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, ks *keys.KeyState, model string, startTime time.Time) {
+func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.Response, ks *keys.KeyState, model string, startTime time.Time, proxyID, requestBytes int64) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Printf("ResponseWriter does not support Flusher")
@@ -391,11 +414,13 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 	reader := bufio.NewReader(resp.Body)
 	var promptTokens, completionTokens int
 	var ttftMs int64
+	var responseBytes int64
 	hasLoggedTTFT := false
 
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			responseBytes += int64(len(line))
 			// Write chunk to client
 			_, writeErr := w.Write(line)
 			if writeErr != nil {
@@ -448,6 +473,7 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 	}
 
 	latencyMs := time.Since(startTime).Milliseconds()
+	ph.logProxy(proxyID, requestBytes, responseBytes, resp.StatusCode, true, "", startTime)
 
 	// Log request to DB
 	err := ph.store.LogRequest(&store.DBRequest{
@@ -464,6 +490,28 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 	})
 	if err != nil {
 		log.Printf("Failed to log request to DB: %v", err)
+	}
+}
+
+func (ph *ProxyHandler) logProxy(proxyID, requestBytes, responseBytes int64, status int, success bool, msg string, start time.Time) {
+	if proxyID == 0 {
+		return
+	}
+	if status >= 500 || status == 0 {
+		success = false
+	}
+	if err := ph.store.LogProxyRequest(store.DBProxyLog{
+		Timestamp:     time.Now(),
+		ProxyID:       proxyID,
+		Provider:      "openrouter",
+		UseCase:       "request",
+		Success:       success,
+		RequestBytes:  requestBytes,
+		ResponseBytes: responseBytes,
+		LatencyMs:     time.Since(start).Milliseconds(),
+		ErrorMsg:      msg,
+	}); err != nil {
+		log.Printf("proxy request log failed: %v", err)
 	}
 }
 

@@ -103,3 +103,51 @@ export interface ModelsResponse {
   top_models: DBModel[]
   free_models: DBModel[]
 }
+
+export interface ProxyItem {
+  id: number
+  raw: string
+  scheme: 'http' | 'https' | 'socks5'
+  host: string
+  port: string
+  username: string
+  status: string
+  last_checked_at: string
+  last_error: string
+  created_at: string
+}
+
+export interface ProxySettings {
+  provider: Provider
+  use_for_checker: boolean
+  use_for_requests: boolean
+  mode: 'always' | 'after_429'
+}
+
+export interface ProxyLogItem {
+  id: number
+  timestamp: string
+  proxy_id: number
+  provider: Provider
+  use_case: string
+  success: boolean
+  request_bytes: number
+  response_bytes: number
+  latency_ms: number
+  error_msg: string
+}
+
+export interface ProxyStats {
+  requests: number
+  successes: number
+  avg_kb: number
+  avg_latency_ms: number
+}
+
+export interface ProxyUsageBucket {
+  bucket: string
+  kilobytes: number
+  latency_avg_ms: number
+  requests: number
+  errors: number
+}

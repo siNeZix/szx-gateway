@@ -63,6 +63,12 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/stats/usage/5m", ws.basicAuth(ws.apiStatsUsage5m))
 	mux.HandleFunc("/api/v2/requests", ws.basicAuth(ws.apiRequests))
 	mux.HandleFunc("/api/v2/models", ws.basicAuth(ws.apiModels))
+	mux.HandleFunc("/api/v2/proxies", ws.basicAuth(ws.apiProxies))
+	mux.HandleFunc("/api/v2/proxies/bulk", ws.basicAuth(ws.apiProxiesBulk))
+	mux.HandleFunc("/api/v2/proxies/logs", ws.basicAuth(ws.apiProxyLogs))
+	mux.HandleFunc("/api/v2/proxies/stats", ws.basicAuth(ws.apiProxyStats))
+	mux.HandleFunc("/api/v2/proxies/usage/5m", ws.basicAuth(ws.apiProxyUsage5m))
+	mux.HandleFunc("/api/v2/proxy-settings", ws.basicAuth(ws.apiProxySettings))
 }
 
 // ---- Ресурс: провайдеры ----
@@ -333,6 +339,162 @@ func (ws *WebServer) apiKeysBulk(w http.ResponseWriter, r *http.Request) {
 		"action":   action,
 		"affected": len(hashes),
 	})
+}
+
+func (ws *WebServer) apiProxies(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Proxies []string `json:"proxies"`
+			Scheme  string   `json:"scheme"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		body.Proxies = cleanKeyList(body.Proxies)
+		if len(body.Proxies) == 0 {
+			writeAPIError(w, http.StatusBadRequest, "no proxies provided")
+			return
+		}
+		added, checked, err := ws.proxies.Add(body.Proxies, body.Scheme)
+		if err != nil {
+			log.Printf("apiProxies add: %v", err)
+			writeAPIError(w, http.StatusInternalServerError, "failed to add proxies")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"added": added, "checked": checked})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := ws.store.GetProxies(false)
+	if err != nil {
+		log.Printf("apiProxies list: %v", err)
+		writeAPIError(w, http.StatusInternalServerError, "proxies load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (ws *WebServer) apiProxiesBulk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		IDs    []int64 `json:"ids"`
+		Action string  `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(body.IDs) == 0 || body.Action == "" {
+		writeAPIError(w, http.StatusBadRequest, "missing ids or action")
+		return
+	}
+	var err error
+	switch body.Action {
+	case "enable":
+		err = ws.store.UpdateProxiesStatus(body.IDs, "active")
+	case "disable":
+		err = ws.store.UpdateProxiesStatus(body.IDs, "disabled")
+	case "delete":
+		err = ws.store.DeleteProxies(body.IDs)
+	case "recheck":
+		err = ws.proxies.Recheck(body.IDs)
+	default:
+		writeAPIError(w, http.StatusBadRequest, "unknown action")
+		return
+	}
+	if err != nil {
+		log.Printf("apiProxiesBulk %s: %v", body.Action, err)
+		writeAPIError(w, http.StatusInternalServerError, "database error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"action": body.Action, "affected": len(body.IDs)})
+}
+
+func (ws *WebServer) apiProxySettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var ps store.ProxySettings
+		if err := json.NewDecoder(r.Body).Decode(&ps); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		if ps.Provider != "openrouter" && ps.Provider != "aihubmix" {
+			writeAPIError(w, http.StatusBadRequest, "unknown provider")
+			return
+		}
+		if err := ws.store.SaveProxySettings(ps); err != nil {
+			log.Printf("apiProxySettings save: %v", err)
+			writeAPIError(w, http.StatusInternalServerError, "settings save failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, ps)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items := []store.ProxySettings{}
+	for _, provider := range []string{"openrouter", "aihubmix"} {
+		ps, err := ws.store.GetProxySettings(provider)
+		if err != nil {
+			log.Printf("apiProxySettings get: %v", err)
+			writeAPIError(w, http.StatusInternalServerError, "settings load failed")
+			return
+		}
+		items = append(items, ps)
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (ws *WebServer) apiProxyLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := ws.store.GetProxyLogs(limit)
+	if err != nil {
+		log.Printf("apiProxyLogs: %v", err)
+		writeAPIError(w, http.StatusInternalServerError, "proxy logs load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (ws *WebServer) apiProxyStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	st, err := ws.store.GetProxyStats(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		log.Printf("apiProxyStats: %v", err)
+		writeAPIError(w, http.StatusInternalServerError, "proxy stats load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (ws *WebServer) apiProxyUsage5m(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	now := time.Now()
+	items, err := ws.store.GetProxyUsageBuckets(now, now.Add(-24*time.Hour), 5*time.Minute)
+	if err != nil {
+		log.Printf("apiProxyUsage5m: %v", err)
+		writeAPIError(w, http.StatusInternalServerError, "proxy usage load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 // ---- Ресурс: статистика ----
