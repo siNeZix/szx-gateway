@@ -58,6 +58,55 @@ type DBRateLimit struct {
 	ResetRaw          sql.NullString
 }
 
+type DBProxy struct {
+	ID            int64     `json:"id"`
+	Raw           string    `json:"raw"`
+	Scheme        string    `json:"scheme"`
+	Host          string    `json:"host"`
+	Port          string    `json:"port"`
+	Username      string    `json:"username"`
+	Password      string    `json:"-"`
+	Status        string    `json:"status"`
+	LastCheckedAt time.Time `json:"last_checked_at"`
+	LastError     string    `json:"last_error"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type ProxySettings struct {
+	Provider       string `json:"provider"`
+	UseForChecker  bool   `json:"use_for_checker"`
+	UseForRequests bool   `json:"use_for_requests"`
+	Mode           string `json:"mode"`
+}
+
+type DBProxyLog struct {
+	ID            int64     `json:"id"`
+	Timestamp     time.Time `json:"timestamp"`
+	ProxyID       int64     `json:"proxy_id"`
+	Provider      string    `json:"provider"`
+	UseCase       string    `json:"use_case"`
+	Success       bool      `json:"success"`
+	RequestBytes  int64     `json:"request_bytes"`
+	ResponseBytes int64     `json:"response_bytes"`
+	LatencyMs     int64     `json:"latency_ms"`
+	ErrorMsg      string    `json:"error_msg"`
+}
+
+type ProxyStats struct {
+	Requests     int64   `json:"requests"`
+	Successes    int64   `json:"successes"`
+	AvgKB        float64 `json:"avg_kb"`
+	AvgLatencyMs int64   `json:"avg_latency_ms"`
+}
+
+type ProxyUsageBucket struct {
+	Bucket       string  `json:"bucket"`
+	Kilobytes    float64 `json:"kilobytes"`
+	LatencyAvgMs int64   `json:"latency_avg_ms"`
+	Requests     int64   `json:"requests"`
+	Errors       int64   `json:"errors"`
+}
+
 type DBModel struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
@@ -252,6 +301,40 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (provider, key_hash, model, day)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_model_usage_day ON model_usage(provider, day, model);`,
+		`CREATE TABLE IF NOT EXISTS proxies (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			raw TEXT NOT NULL,
+			scheme TEXT NOT NULL,
+			host TEXT NOT NULL,
+			port TEXT NOT NULL,
+			username TEXT NOT NULL DEFAULT '',
+			password TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'unchecked',
+			last_checked_at DATETIME NOT NULL,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at DATETIME NOT NULL,
+			UNIQUE(scheme, host, port, username, password)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_proxies_status ON proxies(status);`,
+		`CREATE TABLE IF NOT EXISTS proxy_settings (
+			provider TEXT PRIMARY KEY,
+			use_for_checker INTEGER NOT NULL DEFAULT 0,
+			use_for_requests INTEGER NOT NULL DEFAULT 0,
+			mode TEXT NOT NULL DEFAULT 'after_429'
+		);`,
+		`CREATE TABLE IF NOT EXISTS proxy_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME NOT NULL,
+			proxy_id INTEGER NOT NULL,
+			provider TEXT NOT NULL,
+			use_case TEXT NOT NULL,
+			success INTEGER NOT NULL,
+			request_bytes INTEGER NOT NULL DEFAULT 0,
+			response_bytes INTEGER NOT NULL DEFAULT 0,
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			error_msg TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_proxy_logs_timestamp ON proxy_logs(timestamp);`,
 	}
 
 	for _, q := range queries {
@@ -292,8 +375,252 @@ func (s *Store) migrate() error {
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
 	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
 	_, _ = s.db.Exec(`UPDATE keys SET status = 'unchecked' WHERE provider = 'aihubmix' AND status = 'day_exhausted';`)
+	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix');`)
 
 	return nil
+}
+
+func (s *Store) AddProxy(p DBProxy) (bool, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(`
+		INSERT OR IGNORE INTO proxies (raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, p.Raw, p.Scheme, p.Host, p.Port, p.Username, p.Password, p.Status, p.LastCheckedAt.UTC(), p.LastError, now)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := res.RowsAffected()
+	return rows > 0, nil
+}
+
+func (s *Store) GetProxies(activeOnly bool) ([]DBProxy, error) {
+	q := `SELECT id, raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at FROM proxies`
+	if activeOnly {
+		q += ` WHERE status = 'active'`
+	}
+	q += ` ORDER BY id DESC`
+	rows, err := s.db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []DBProxy{}
+	for rows.Next() {
+		var p DBProxy
+		if err := rows.Scan(&p.ID, &p.Raw, &p.Scheme, &p.Host, &p.Port, &p.Username, &p.Password, &p.Status, &p.LastCheckedAt, &p.LastError, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateProxyCheck(id int64, status, lastError string, checkedAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE proxies SET status = ?, last_error = ?, last_checked_at = ? WHERE id = ?`, status, lastError, checkedAt.UTC(), id)
+	return err
+}
+
+func (s *Store) UpdateProxiesStatus(ids []int64, status string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE proxies SET status = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.Exec(status, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteProxies(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`DELETE FROM proxies WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.Exec(id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetProxySettings(provider string) (ProxySettings, error) {
+	ps := ProxySettings{Provider: provider, Mode: "after_429"}
+	var checker, requests int
+	err := s.db.QueryRow(`SELECT use_for_checker, use_for_requests, mode FROM proxy_settings WHERE provider = ?`, provider).Scan(&checker, &requests, &ps.Mode)
+	if err == sql.ErrNoRows {
+		return ps, nil
+	}
+	if err != nil {
+		return ps, err
+	}
+	ps.UseForChecker = checker != 0
+	ps.UseForRequests = requests != 0
+	if ps.Mode != "always" && ps.Mode != "after_429" {
+		ps.Mode = "after_429"
+	}
+	return ps, nil
+}
+
+func (s *Store) SaveProxySettings(ps ProxySettings) error {
+	checker, requests := 0, 0
+	if ps.UseForChecker {
+		checker = 1
+	}
+	if ps.UseForRequests {
+		requests = 1
+	}
+	if ps.Mode != "always" && ps.Mode != "after_429" {
+		ps.Mode = "after_429"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO proxy_settings (provider, use_for_checker, use_for_requests, mode)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(provider) DO UPDATE SET
+			use_for_checker = excluded.use_for_checker,
+			use_for_requests = excluded.use_for_requests,
+			mode = excluded.mode
+	`, ps.Provider, checker, requests, ps.Mode)
+	return err
+}
+
+func (s *Store) LogProxyRequest(l DBProxyLog) error {
+	_, err := s.db.Exec(`
+		INSERT INTO proxy_logs (timestamp, proxy_id, provider, use_case, success, request_bytes, response_bytes, latency_ms, error_msg)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, l.Timestamp.UTC(), l.ProxyID, l.Provider, l.UseCase, boolInt(l.Success), l.RequestBytes, l.ResponseBytes, l.LatencyMs, l.ErrorMsg)
+	return err
+}
+
+func (s *Store) GetProxyLogs(limit int) ([]DBProxyLog, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, timestamp, proxy_id, provider, use_case, success, request_bytes, response_bytes, latency_ms, error_msg
+		FROM proxy_logs
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DBProxyLog{}
+	for rows.Next() {
+		var l DBProxyLog
+		var success int
+		if err := rows.Scan(&l.ID, &l.Timestamp, &l.ProxyID, &l.Provider, &l.UseCase, &success, &l.RequestBytes, &l.ResponseBytes, &l.LatencyMs, &l.ErrorMsg); err != nil {
+			return nil, err
+		}
+		l.Success = success != 0
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetProxyStats(since time.Time) (ProxyStats, error) {
+	var st ProxyStats
+	var bytes sql.NullFloat64
+	var latency sql.NullInt64
+	err := s.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(SUM(success), 0), AVG(request_bytes + response_bytes), AVG(latency_ms)
+		FROM proxy_logs
+		WHERE timestamp >= ?
+	`, since.UTC()).Scan(&st.Requests, &st.Successes, &bytes, &latency)
+	if err != nil {
+		return st, err
+	}
+	if bytes.Valid {
+		st.AvgKB = bytes.Float64 / 1024
+	}
+	if latency.Valid {
+		st.AvgLatencyMs = latency.Int64
+	}
+	return st, nil
+}
+
+func (s *Store) GetProxyUsageBuckets(now, since time.Time, step time.Duration) ([]ProxyUsageBucket, error) {
+	if step <= 0 {
+		step = 5 * time.Minute
+	}
+	loc := time.Local
+	now = localBucketStart(now, step, loc)
+	since = localBucketStart(since, step, loc)
+	buckets := map[time.Time]*ProxyUsageBucket{}
+	order := []time.Time{}
+	for t := since; !t.After(now); t = t.Add(step) {
+		buckets[t] = &ProxyUsageBucket{Bucket: t.Format(time.RFC3339)}
+		order = append(order, t)
+	}
+	rows, err := s.db.Query(`
+		SELECT timestamp, request_bytes + response_bytes, latency_ms, success
+		FROM proxy_logs
+		WHERE timestamp >= ? AND timestamp < ?
+		ORDER BY timestamp ASC
+	`, since.UTC(), now.Add(step).UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ts time.Time
+		var bytes, latency int64
+		var success int
+		if err := rows.Scan(&ts, &bytes, &latency, &success); err != nil {
+			return nil, err
+		}
+		b := buckets[localBucketStart(ts, step, loc)]
+		if b == nil {
+			continue
+		}
+		b.Requests++
+		b.Kilobytes += float64(bytes) / 1024
+		b.LatencyAvgMs += latency
+		if success == 0 {
+			b.Errors++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]ProxyUsageBucket, 0, len(order))
+	for _, t := range order {
+		b := *buckets[t]
+		if b.Requests > 0 {
+			b.LatencyAvgMs /= b.Requests
+		}
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func UTCDay(t time.Time) string {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/store"
 )
 
@@ -31,13 +32,15 @@ type KeyChecker struct {
 	interval     time.Duration
 	concurrency  int
 	client       *http.Client
+	proxyPool    *proxies.Pool
+	store        *store.Store
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
 	checkURL     string
 	providerType string
 }
 
-func NewKeyChecker(pool *KeyPool, ttl time.Duration, rateLimit int, interval time.Duration, concurrency int, checkURL, providerType string) *KeyChecker {
+func NewKeyChecker(pool *KeyPool, ttl time.Duration, rateLimit int, interval time.Duration, concurrency int, checkURL, providerType string, proxyPool *proxies.Pool, s *store.Store) *KeyChecker {
 	return &KeyChecker{
 		pool:         pool,
 		ttl:          ttl,
@@ -45,6 +48,8 @@ func NewKeyChecker(pool *KeyPool, ttl time.Duration, rateLimit int, interval tim
 		interval:     interval,
 		concurrency:  concurrency,
 		client:       &http.Client{Timeout: 10 * time.Second},
+		proxyPool:    proxyPool,
+		store:        s,
 		stopChan:     make(chan struct{}),
 		checkURL:     checkURL,
 		providerType: providerType,
@@ -166,11 +171,21 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	req.Header.Set("User-Agent", "OpenRouterGateway/1.0")
 
 	now := time.Now()
-	resp, err := kc.client.Do(req)
+	settings, _ := kc.store.GetProxySettings(kc.providerType)
+	resp, err := kc.do(req, settings, false)
 	if err != nil {
 		log.Printf("Network error verifying key %s: %v", masked, err)
 		ks.SetCooldown(1*time.Minute, "")
 		return
+	}
+	if resp.StatusCode == http.StatusTooManyRequests && settings.UseForChecker && settings.Mode == "after_429" {
+		resp.Body.Close()
+		resp, err = kc.do(req, settings, true)
+		if err != nil {
+			log.Printf("Proxy retry error verifying key %s: %v", masked, err)
+			ks.SetCooldown(1*time.Minute, "")
+			return
+		}
 	}
 	defer resp.Body.Close()
 
@@ -253,5 +268,50 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	default:
 		log.Printf("Unexpected status verifying key %s: %d", masked, resp.StatusCode)
 		ks.CooldownUntil = now.Add(1 * time.Minute)
+	}
+}
+
+func (kc *KeyChecker) do(req *http.Request, settings store.ProxySettings, after429 bool) (*http.Response, error) {
+	if settings.UseForChecker && proxies.ShouldUse(settings, after429) {
+		client, proxyID := kc.proxyPool.Client(true, 10*time.Second)
+		start := time.Now()
+		resp, err := client.Do(req.Clone(req.Context()))
+		kc.logProxy(proxyID, 0, resp, err, start)
+		return resp, err
+	}
+	return kc.client.Do(req.Clone(req.Context()))
+}
+
+func (kc *KeyChecker) logProxy(proxyID, requestBytes int64, resp *http.Response, err error, start time.Time) {
+	if proxyID == 0 {
+		return
+	}
+	msg := ""
+	success := err == nil
+	var responseBytes int64
+	if err != nil {
+		msg = err.Error()
+	} else if resp != nil {
+		responseBytes = resp.ContentLength
+		if responseBytes < 0 {
+			responseBytes = 0
+		}
+		success = resp.StatusCode >= 200 && resp.StatusCode < 500
+		if !success {
+			msg = resp.Status
+		}
+	}
+	if err := kc.store.LogProxyRequest(store.DBProxyLog{
+		Timestamp:     time.Now(),
+		ProxyID:       proxyID,
+		Provider:      kc.providerType,
+		UseCase:       "checker",
+		Success:       success,
+		RequestBytes:  requestBytes,
+		ResponseBytes: responseBytes,
+		LatencyMs:     time.Since(start).Milliseconds(),
+		ErrorMsg:      msg,
+	}); err != nil {
+		log.Printf("proxy checker log failed: %v", err)
 	}
 }

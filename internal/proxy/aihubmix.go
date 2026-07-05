@@ -15,6 +15,7 @@ import (
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
 	"openrouter-gateway/internal/models"
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/store"
 )
 
@@ -69,18 +70,20 @@ type AihubmixHandler struct {
 	pool       *keys.KeyPool
 	rankingMgr *models.RankingManager
 	client     *http.Client
+	proxyPool  *proxies.Pool
 	rate429Mu  sync.Mutex
 	rate429    map[string]int
 	rate429Day string
 }
 
-func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager) *AihubmixHandler {
+func NewAihubmixHandler(cfg *config.Config, s *store.Store, p *keys.KeyPool, rm *models.RankingManager, proxyPool *proxies.Pool) *AihubmixHandler {
 	return &AihubmixHandler{
 		cfg:        cfg,
 		store:      s,
 		pool:       p,
 		rankingMgr: rm,
 		client:     &http.Client{Timeout: 10 * time.Minute},
+		proxyPool:  proxyPool,
 		rate429:    make(map[string]int),
 	}
 }
@@ -190,6 +193,8 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		maxAttempts = aihubmixMaxKeySwitches
 	}
 	provider429Retries := 0
+	settings, _ := h.store.GetProxySettings("aihubmix")
+	proxyAfter429 := false
 	triedKeys := make(map[string]bool)
 	var finalErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -223,8 +228,15 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		req.Header.Set("Authorization", "Bearer "+keyState.RawKey)
 
 		startTime := time.Now()
-		resp, err := h.client.Do(req)
+		client := h.client
+		usingProxy := settings.UseForRequests && proxies.ShouldUse(settings, proxyAfter429)
+		var proxyID int64
+		if usingProxy {
+			client, proxyID = h.proxyPool.Client(true, 10*time.Minute)
+		}
+		resp, err := client.Do(req)
 		if err != nil {
+			h.logProxy(proxyID, int64(len(bodyBytes)), 0, 0, false, err.Error(), startTime)
 			log.Printf("[AIHubMix] network error: %v", err)
 			keyState.RollbackUsage()
 			h.pool.SyncKeyToDB(keyState)
@@ -279,12 +291,21 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				finalErr = fmt.Errorf("key rate-limited with status %d", resp.StatusCode)
 				continue
 			case aihubmixRetryProviderOnce:
+				if settings.UseForRequests && settings.Mode == "after_429" && !usingProxy {
+					resp.Body.Close()
+					log.Printf("[AIHubMix] provider/model 429, retrying through proxy")
+					keyState.RollbackUsage()
+					h.pool.SyncKeyToDB(keyState)
+					proxyAfter429 = true
+					finalErr = fmt.Errorf("provider/model rate-limited, retrying through proxy")
+					continue
+				}
 				if provider429Retries >= 3 {
 					log.Printf("[AIHubMix] provider/model 429 repeated, returning upstream response")
 					keyState.RollbackUsage()
 					h.pool.SyncKeyToDB(keyState)
 					resp.Status = "provider-rate-limit"
-					h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true)
+					h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true, proxyID, int64(len(bodyBytes)))
 					return
 				}
 				resp.Body.Close()
@@ -317,7 +338,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				log.Printf("[AIHubMix] %d model/provider/request error (key NOT banned)", resp.StatusCode)
 				keyState.RollbackUsage()
 				h.pool.SyncKeyToDB(keyState)
-				h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true)
+				h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true, proxyID, int64(len(bodyBytes)))
 				return
 			}
 		}
@@ -326,7 +347,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 		if logModel == "" {
 			logModel = r.URL.Path
 		}
-		h.relayResponse(w, resp, firstBytes, bufReader, keyState, logModel, startTime, ttftMs, isStream, true)
+		h.relayResponse(w, resp, firstBytes, bufReader, keyState, logModel, startTime, ttftMs, isStream, true, proxyID, int64(len(bodyBytes)))
 		return
 	}
 
@@ -356,13 +377,14 @@ func (h *AihubmixHandler) nextAIHubMix429Cooldown(ks *keys.KeyState) time.Durati
 	}
 }
 
-func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, model string, startTime time.Time, ttftMs int64, isStream, recordRequest bool) {
+func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Response, firstBytes []byte, reader *bufio.Reader, ks *keys.KeyState, model string, startTime time.Time, ttftMs int64, isStream, recordRequest bool, proxyID, requestBytes int64) {
 	defer resp.Body.Close()
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, _ := w.(http.Flusher)
 	tokens := usageTokens(firstBytes)
+	responseBytes := int64(len(firstBytes))
 	if len(firstBytes) > 0 {
 		w.Write(firstBytes)
 		if flusher != nil {
@@ -372,6 +394,7 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			responseBytes += int64(len(line))
 			if n := usageTokens(line); n > 0 {
 				tokens = n
 			}
@@ -391,6 +414,7 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 
 	latencyMs := time.Since(startTime).Milliseconds()
 	isSuccess := resp.StatusCode == 200
+	h.logProxy(proxyID, requestBytes, responseBytes, resp.StatusCode, isSuccess, statusText(resp), startTime)
 
 	// Агрегируем в model_usage: запросы/токены/латенси/ошибки.
 	// Запрос всегда учитывается; токены — только на успехе (при ошибке их нет).
@@ -421,6 +445,28 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 		Provider:         "aihubmix",
 	}); err != nil {
 		log.Printf("[AIHubMix] failed to log request: %v", err)
+	}
+}
+
+func (h *AihubmixHandler) logProxy(proxyID, requestBytes, responseBytes int64, status int, success bool, msg string, start time.Time) {
+	if proxyID == 0 {
+		return
+	}
+	if status >= 500 || status == 0 {
+		success = false
+	}
+	if err := h.store.LogProxyRequest(store.DBProxyLog{
+		Timestamp:     time.Now(),
+		ProxyID:       proxyID,
+		Provider:      "aihubmix",
+		UseCase:       "request",
+		Success:       success,
+		RequestBytes:  requestBytes,
+		ResponseBytes: responseBytes,
+		LatencyMs:     time.Since(start).Milliseconds(),
+		ErrorMsg:      msg,
+	}); err != nil {
+		log.Printf("[AIHubMix] proxy request log failed: %v", err)
 	}
 }
 

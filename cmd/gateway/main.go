@@ -12,6 +12,7 @@ import (
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
 	"openrouter-gateway/internal/models"
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/proxy"
 	"openrouter-gateway/internal/store"
 	"openrouter-gateway/internal/web"
@@ -45,6 +46,7 @@ func main() {
 	rankingMgr := models.NewRankingManager(dbStore, cfg.RankingRefresh)
 	rankingMgr.Start()
 	log.Println("Model ranking manager started.")
+	proxyPool := proxies.NewPool(dbStore)
 
 	keyChecker := keys.NewKeyChecker(
 		openRouterPool,
@@ -54,6 +56,8 @@ func main() {
 		cfg.KeyCheckConcurrency,
 		"https://openrouter.ai/api/v1/key",
 		"openrouter",
+		proxyPool,
+		dbStore,
 	)
 	keyChecker.Start()
 	log.Println("Background key checker started (OpenRouter).")
@@ -66,18 +70,20 @@ func main() {
 		cfg.KeyCheckConcurrency,
 		"https://aihubmix.com/v1/models",
 		"aihubmix",
+		proxyPool,
+		dbStore,
 	)
 	aihubmixChecker.Start()
 	log.Println("Background key checker started (AIHubMix).")
 
-	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr)
-	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr)
+	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr, proxyPool)
+	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr, proxyPool)
 
 	pools := map[string]*keys.KeyPool{
 		"openrouter": openRouterPool,
 		"aihubmix":   aihubmixPool,
 	}
-	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, pools)
+	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, pools, proxyPool)
 
 	// OpenRouter mux: /v1/* → OpenRouter proxy, / → admin
 	orMux := http.NewServeMux()

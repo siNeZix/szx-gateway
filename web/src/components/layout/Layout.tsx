@@ -7,6 +7,7 @@ const navItems = [
   { to: '/keys', label: 'Ключи' },
   { to: '/stats', label: 'Статистика' },
   { to: '/models', label: 'Модели' },
+  { to: '/proxies', label: 'Прокси' },
 ]
 
 function ProviderSwitcher() {

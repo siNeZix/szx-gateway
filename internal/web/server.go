@@ -7,6 +7,7 @@ import (
 	"openrouter-gateway/internal/config"
 	"openrouter-gateway/internal/keys"
 	"openrouter-gateway/internal/models"
+	"openrouter-gateway/internal/proxies"
 	"openrouter-gateway/internal/store"
 )
 
@@ -15,14 +16,16 @@ type WebServer struct {
 	store      *store.Store
 	rankingMgr *models.RankingManager
 	pools      map[string]*keys.KeyPool
+	proxies    *proxies.Pool
 }
 
-func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool) *WebServer {
+func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool, proxyPool *proxies.Pool) *WebServer {
 	return &WebServer{
 		cfg:        cfg,
 		store:      s,
 		rankingMgr: rm,
 		pools:      pools,
+		proxies:    proxyPool,
 	}
 }
 
