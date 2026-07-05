@@ -132,6 +132,11 @@ func TestAPI_Contract(t *testing.T) {
 			t.Errorf("stats missing key %q; got %v", key, keysOf(stats))
 		}
 	}
+	for _, key := range []string{"models", "keys", "top_models", "free_models", "usage_trend"} {
+		if _, ok := stats[key].([]any); !ok {
+			t.Errorf("stats %s not array: %T", key, stats[key])
+		}
+	}
 
 	// 3. GET /api/v2/models?provider=openrouter → top_models + free_models как массивы.
 	env = doJSON(t, srv, "GET", "/api/v2/models?provider=openrouter", nil)
