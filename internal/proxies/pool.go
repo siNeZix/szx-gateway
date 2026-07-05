@@ -141,8 +141,14 @@ func (p *Pool) Next() (store.DBProxy, bool) {
 }
 
 func (p *Pool) Check(proxy store.DBProxy) (string, string) {
-	client := clientFor(proxy, 12*time.Second)
-	resp, err := client.Get("https://openrouter.ai/api/v1/models")
+	client := clientFor(proxy, 5*time.Second)
+	req, err := http.NewRequest(http.MethodHead, "https://openrouter.ai/", nil)
+	if err != nil {
+		return "invalid", err.Error()
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "invalid", err.Error()
 	}
