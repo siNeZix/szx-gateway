@@ -59,6 +59,8 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/stats", ws.basicAuth(ws.apiStats))
 	mux.HandleFunc("/api/v2/stats/models", ws.basicAuth(ws.apiStatsModels))
 	mux.HandleFunc("/api/v2/stats/usage", ws.basicAuth(ws.apiStatsUsage))
+	mux.HandleFunc("/api/v2/stats/usage/hourly", ws.basicAuth(ws.apiStatsUsageHourly))
+	mux.HandleFunc("/api/v2/stats/usage/10m", ws.basicAuth(ws.apiStatsUsage10m))
 	mux.HandleFunc("/api/v2/requests", ws.basicAuth(ws.apiRequests))
 	mux.HandleFunc("/api/v2/models", ws.basicAuth(ws.apiModels))
 }
@@ -443,6 +445,45 @@ func (ws *WebServer) apiStatsUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, trend)
+}
+
+// GET /api/stats/usage/hourly?provider= — сегодня по локальным часам сервера.
+func (ws *WebServer) apiStatsUsageHourly(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	provider, _ := providerFromRequest(r)
+	now := time.Now().In(time.Local)
+	since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	buckets, err := ws.store.GetUsageBuckets(provider, now, since, time.Hour)
+	if err != nil {
+		log.Printf("apiStatsUsageHourly: GetUsageBuckets(%s): %v", provider, err)
+		writeAPIError(w, http.StatusInternalServerError, "usage buckets failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buckets)
+}
+
+// GET /api/stats/usage/10m?provider= — последние 6 часов по 10 минутам.
+func (ws *WebServer) apiStatsUsage10m(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	provider, _ := providerFromRequest(r)
+	now := time.Now().In(time.Local)
+	buckets, err := ws.store.GetUsageBuckets(provider, now, now.Add(-6*time.Hour), 10*time.Minute)
+	if err != nil {
+		log.Printf("apiStatsUsage10m: GetUsageBuckets(%s): %v", provider, err)
+		writeAPIError(w, http.StatusInternalServerError, "usage buckets failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buckets)
 }
 
 // GET /api/v2/requests?provider=&limit=100 — последние запросы без payload/body.

@@ -42,6 +42,14 @@ export interface ModelUsageTrend {
   errors: number
 }
 
+export interface UsageBucket {
+  bucket: string
+  requests: number
+  tokens: number
+  latency_avg_ms: number
+  errors: number
+}
+
 export interface RequestLogItem {
   id: number
   timestamp: string

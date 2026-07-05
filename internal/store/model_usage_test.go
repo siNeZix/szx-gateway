@@ -140,3 +140,41 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 		t.Fatalf("log = %+v", log)
 	}
 }
+
+func TestUsageBucketsUseLocalTime(t *testing.T) {
+	s, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	oldLocal := time.Local
+	t.Cleanup(func() { time.Local = oldLocal })
+	time.Local = time.FixedZone("TEST", 3*3600)
+
+	now := time.Date(2026, 1, 2, 15, 37, 0, 0, time.Local)
+	for _, r := range []*DBRequest{
+		{Timestamp: time.Date(2026, 1, 2, 15, 5, 0, 0, time.Local), KeyHash: "k", Model: "m", StatusCode: 200, PromptTokens: 2, CompletionTokens: 3, LatencyMs: 100, Provider: "openrouter"},
+		{Timestamp: time.Date(2026, 1, 2, 15, 14, 0, 0, time.Local), KeyHash: "k", Model: "m", StatusCode: 500, LatencyMs: 300, Provider: "openrouter"},
+	} {
+		if err := s.LogRequest(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hourly, err := s.GetUsageBuckets("openrouter", now, time.Date(2026, 1, 2, 0, 0, 0, 0, time.Local), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hourly) != 16 || hourly[15].Bucket != "2026-01-02T15:00:00+03:00" || hourly[15].Requests != 2 || hourly[15].Tokens != 5 || hourly[15].LatencyAvg != 200 || hourly[15].Errors != 1 {
+		t.Fatalf("hourly = %+v", hourly)
+	}
+
+	tenMinutes, err := s.GetUsageBuckets("openrouter", now, now.Add(-30*time.Minute), 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tenMinutes) != 4 || tenMinutes[1].Bucket != "2026-01-02T15:10:00+03:00" || tenMinutes[1].Requests != 1 || tenMinutes[1].Errors != 1 {
+		t.Fatalf("10m = %+v", tenMinutes)
+	}
+}

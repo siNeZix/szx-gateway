@@ -7,6 +7,7 @@ import type {
   ProviderInfo,
   RequestLogItem,
   StatsSnapshot,
+  UsageBucket,
 } from '../types'
 
 // Единый API-клиент: разворачивает конверт { data, error } в данные либо бросает.
@@ -57,6 +58,12 @@ export const api = {
     getJSON<ModelUsageTrend[]>(
       `/api/v2/stats/usage?provider=${provider}&range=${days}`,
     ),
+
+  statsUsageHourly: (provider: Provider) =>
+    getJSON<UsageBucket[]>(`/api/v2/stats/usage/hourly?provider=${provider}`),
+
+  statsUsage10m: (provider: Provider) =>
+    getJSON<UsageBucket[]>(`/api/v2/stats/usage/10m?provider=${provider}`),
 
   requestLog: (provider: Provider, limit = 100) =>
     getJSON<RequestLogItem[]>(

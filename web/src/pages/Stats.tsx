@@ -28,6 +28,18 @@ export default function Stats() {
     refetchInterval: 30_000,
   })
 
+  const { data: hourly = [], isLoading: hourlyLoading } = useQuery({
+    queryKey: ['statsUsageHourly', provider],
+    queryFn: () => api.statsUsageHourly(provider),
+    refetchInterval: 30_000,
+  })
+
+  const { data: tenMinutes = [], isLoading: tenMinutesLoading } = useQuery({
+    queryKey: ['statsUsage10m', provider],
+    queryFn: () => api.statsUsage10m(provider),
+    refetchInterval: 30_000,
+  })
+
   const { data: requests = [], isLoading: requestsLoading } = useQuery({
     queryKey: ['requestLog', provider],
     queryFn: () => api.requestLog(provider, 100),
@@ -79,9 +91,28 @@ export default function Stats() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Chart
+          title="Сегодня по часам"
+          isLoading={hourlyLoading}
+          data={hourly}
+          labelKey="bucket"
+          dataKey="requests"
+          color="#a78bfa"
+          formatLabel={(v) => new Date(v).toLocaleTimeString([], { hour: '2-digit' })}
+        />
+        <Chart
+          title="6 часов / 10 минут"
+          isLoading={tenMinutesLoading}
+          data={tenMinutes}
+          labelKey="bucket"
+          dataKey="requests"
+          color="#22d3ee"
+          formatLabel={(v) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        />
+        <Chart
           title="Запросы по дням"
           isLoading={isLoading}
           data={trend}
+          labelKey="day"
           dataKey="requests"
           color="#818cf8"
         />
@@ -89,6 +120,7 @@ export default function Stats() {
           title="Токены по дням"
           isLoading={isLoading}
           data={trend}
+          labelKey="day"
           dataKey="tokens"
           color="#34d399"
         />
@@ -96,6 +128,7 @@ export default function Stats() {
           title="Средняя задержка (ms)"
           isLoading={isLoading}
           data={trend}
+          labelKey="day"
           dataKey="latency_avg_ms"
           color="#fbbf24"
         />
@@ -103,6 +136,7 @@ export default function Stats() {
           title="Ошибки по дням"
           isLoading={isLoading}
           data={trend}
+          labelKey="day"
           dataKey="errors"
           color="#fb7185"
         />
@@ -183,14 +217,25 @@ function Chart({
   title,
   isLoading,
   data,
+  labelKey,
   dataKey,
   color,
+  formatLabel,
 }: {
   title: string
   isLoading: boolean
-  data: { day: string }[]
+  data: {
+    day?: string
+    bucket?: string
+    requests: number
+    tokens: number
+    latency_avg_ms: number
+    errors: number
+  }[]
+  labelKey: string
   dataKey: string
   color: string
+  formatLabel?: (value: string) => string
 }) {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-800/30 p-4">
@@ -206,10 +251,11 @@ function Chart({
           <LineChart data={data}>
             <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
             <XAxis
-              dataKey="day"
+              dataKey={labelKey}
               stroke="#64748b"
               fontSize={11}
               tickLine={false}
+              tickFormatter={(v) => formatLabel ? formatLabel(String(v)) : String(v)}
             />
             <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
             <Tooltip

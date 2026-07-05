@@ -99,6 +99,15 @@ type ModelUsageTrend struct {
 	Errors     int64  `json:"errors"`
 }
 
+// UsageBucket — агрегат запросов за локальный временной бакет.
+type UsageBucket struct {
+	Bucket     string `json:"bucket"`
+	Requests   int64  `json:"requests"`
+	Tokens     int64  `json:"tokens"`
+	LatencyAvg int64  `json:"latency_avg_ms"`
+	Errors     int64  `json:"errors"`
+}
+
 type RequestLogItem struct {
 	ID        int64  `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -449,6 +458,81 @@ func (s *Store) GetModelUsageTrend(provider string, days int) ([]ModelUsageTrend
 		res = append(res, item)
 	}
 	return res, nil
+}
+
+func (s *Store) GetUsageBuckets(provider string, now time.Time, since time.Time, step time.Duration) ([]UsageBucket, error) {
+	if step <= 0 {
+		step = time.Hour
+	}
+	loc := time.Local
+	now = localBucketStart(now, step, loc)
+	since = localBucketStart(since, step, loc)
+	if since.After(now) {
+		since = now
+	}
+
+	buckets := map[time.Time]*UsageBucket{}
+	order := []time.Time{}
+	for t := since; !t.After(now); t = t.Add(step) {
+		buckets[t] = &UsageBucket{Bucket: t.Format(time.RFC3339)}
+		order = append(order, t)
+	}
+
+	rows, err := s.db.Query(`
+		SELECT timestamp, status_code, prompt_tokens + completion_tokens, latency_ms
+		FROM requests
+		WHERE provider = ? AND timestamp >= ? AND timestamp < ?
+		ORDER BY timestamp ASC
+	`, provider, since, now.Add(step))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ts time.Time
+		var status int
+		var tokens, latency int64
+		if err := rows.Scan(&ts, &status, &tokens, &latency); err != nil {
+			return nil, err
+		}
+		bucketTime := localBucketStart(ts, step, loc)
+		bucket := buckets[bucketTime]
+		if bucket == nil {
+			continue
+		}
+		bucket.Requests++
+		bucket.Tokens += tokens
+		bucket.LatencyAvg += latency
+		if status >= 400 || status == 0 {
+			bucket.Errors++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	res := make([]UsageBucket, 0, len(order))
+	for _, t := range order {
+		bucket := *buckets[t]
+		if bucket.Requests > 0 {
+			bucket.LatencyAvg /= bucket.Requests
+		}
+		res = append(res, bucket)
+	}
+	return res, nil
+}
+
+func localBucketStart(t time.Time, step time.Duration, loc *time.Location) time.Time {
+	t = t.In(loc)
+	stepMinutes := int(step / time.Minute)
+	if stepMinutes <= 0 {
+		stepMinutes = 60
+	}
+	y, m, d := t.Date()
+	minutes := t.Hour()*60 + t.Minute()
+	minutes = minutes / stepMinutes * stepMinutes
+	return time.Date(y, m, d, minutes/60, minutes%60, 0, 0, loc)
 }
 
 func (s *Store) AddKeys(keys []string, provider string) (int, error) {
