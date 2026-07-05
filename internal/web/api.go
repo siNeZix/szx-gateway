@@ -60,7 +60,7 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/stats/models", ws.basicAuth(ws.apiStatsModels))
 	mux.HandleFunc("/api/v2/stats/usage", ws.basicAuth(ws.apiStatsUsage))
 	mux.HandleFunc("/api/v2/stats/usage/hourly", ws.basicAuth(ws.apiStatsUsageHourly))
-	mux.HandleFunc("/api/v2/stats/usage/10m", ws.basicAuth(ws.apiStatsUsage10m))
+	mux.HandleFunc("/api/v2/stats/usage/5m", ws.basicAuth(ws.apiStatsUsage5m))
 	mux.HandleFunc("/api/v2/requests", ws.basicAuth(ws.apiRequests))
 	mux.HandleFunc("/api/v2/models", ws.basicAuth(ws.apiModels))
 }
@@ -467,8 +467,8 @@ func (ws *WebServer) apiStatsUsageHourly(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, buckets)
 }
 
-// GET /api/stats/usage/10m?provider= — последние 6 часов по 10 минутам.
-func (ws *WebServer) apiStatsUsage10m(w http.ResponseWriter, r *http.Request) {
+// GET /api/stats/usage/5m?provider= — последние 6 часов по 5 минутам.
+func (ws *WebServer) apiStatsUsage5m(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -476,9 +476,9 @@ func (ws *WebServer) apiStatsUsage10m(w http.ResponseWriter, r *http.Request) {
 
 	provider, _ := providerFromRequest(r)
 	now := time.Now().In(time.Local)
-	buckets, err := ws.store.GetUsageBuckets(provider, now, now.Add(-6*time.Hour), 10*time.Minute)
+	buckets, err := ws.store.GetUsageBuckets(provider, now, now.Add(-6*time.Hour), 5*time.Minute)
 	if err != nil {
-		log.Printf("apiStatsUsage10m: GetUsageBuckets(%s): %v", provider, err)
+		log.Printf("apiStatsUsage5m: GetUsageBuckets(%s): %v", provider, err)
 		writeAPIError(w, http.StatusInternalServerError, "usage buckets failed")
 		return
 	}

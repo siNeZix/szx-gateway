@@ -13,11 +13,11 @@ import { api } from '../api/client'
 import { useProvider } from '../providers/provider'
 
 const RANGES = [
+  { label: '6 часов', value: '5m' },
+  { label: '1 день', value: 'hourly' },
   { label: '7 дней', value: '7' },
   { label: '14 дней', value: '14' },
   { label: '30 дней', value: '30' },
-  { label: '1 день', value: 'hourly' },
-  { label: '6 часов', value: '10m' },
 ]
 
 export default function Stats() {
@@ -37,9 +37,9 @@ export default function Stats() {
     refetchInterval: 30_000,
   })
 
-  const { data: tenMinutes = [], isLoading: tenMinutesLoading } = useQuery({
-    queryKey: ['statsUsage10m', provider],
-    queryFn: () => api.statsUsage10m(provider),
+  const { data: fiveMinutes = [], isLoading: fiveMinutesLoading } = useQuery({
+    queryKey: ['statsUsage5m', provider],
+    queryFn: () => api.statsUsage5m(provider),
     refetchInterval: 30_000,
   })
 
@@ -49,12 +49,12 @@ export default function Stats() {
     refetchInterval: 5_000,
   })
 
-  const chartData = range === 'hourly' ? hourly : range === '10m' ? tenMinutes : trend
-  const chartLoading = range === 'hourly' ? hourlyLoading : range === '10m' ? tenMinutesLoading : isLoading
-  const labelKey = range === 'hourly' || range === '10m' ? 'bucket' : 'day'
+  const chartData = range === 'hourly' ? hourly : range === '5m' ? fiveMinutes : trend
+  const chartLoading = range === 'hourly' ? hourlyLoading : range === '5m' ? fiveMinutesLoading : isLoading
+  const labelKey = range === 'hourly' || range === '5m' ? 'bucket' : 'day'
   const formatLabel = range === 'hourly'
     ? (v: string) => new Date(v).toLocaleTimeString([], { hour: '2-digit' })
-    : range === '10m'
+    : range === '5m'
       ? (v: string) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : undefined
 

@@ -170,11 +170,11 @@ func TestUsageBucketsUseLocalTime(t *testing.T) {
 		t.Fatalf("hourly = %+v", hourly)
 	}
 
-	tenMinutes, err := s.GetUsageBuckets("openrouter", now, now.Add(-30*time.Minute), 10*time.Minute)
+	fiveMinutes, err := s.GetUsageBuckets("openrouter", now, now.Add(-30*time.Minute), 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tenMinutes) != 4 || tenMinutes[1].Bucket != "2026-01-02T15:10:00+03:00" || tenMinutes[1].Requests != 1 || tenMinutes[1].Errors != 1 {
-		t.Fatalf("10m = %+v", tenMinutes)
+	if len(fiveMinutes) != 7 || fiveMinutes[1].Bucket != "2026-01-02T15:10:00+03:00" || fiveMinutes[1].Requests != 1 || fiveMinutes[1].Errors != 1 {
+		t.Fatalf("5m = %+v", fiveMinutes)
 	}
 }

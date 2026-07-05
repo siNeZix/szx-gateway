@@ -62,8 +62,8 @@ export const api = {
   statsUsageHourly: (provider: Provider) =>
     getJSON<UsageBucket[]>(`/api/v2/stats/usage/hourly?provider=${provider}`),
 
-  statsUsage10m: (provider: Provider) =>
-    getJSON<UsageBucket[]>(`/api/v2/stats/usage/10m?provider=${provider}`),
+  statsUsage5m: (provider: Provider) =>
+    getJSON<UsageBucket[]>(`/api/v2/stats/usage/5m?provider=${provider}`),
 
   requestLog: (provider: Provider, limit = 100) =>
     getJSON<RequestLogItem[]>(
