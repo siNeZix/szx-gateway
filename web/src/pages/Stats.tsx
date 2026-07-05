@@ -34,6 +34,19 @@ export default function Stats() {
     refetchInterval: 5_000,
   })
 
+  const exportLogs = async () => {
+    const logs = await api.requestLog(provider, 500)
+    const blob = new Blob([JSON.stringify(logs, null, 2)], {
+      type: 'application/json',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `gateway-logs-${provider}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -41,6 +54,13 @@ export default function Stats() {
           Статистика использования ({provider})
         </h2>
         <div className="flex gap-1">
+          <button
+            onClick={exportLogs}
+            disabled={requests.length === 0}
+            className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Экспорт логов
+          </button>
           {RANGES.map((r) => (
             <button
               key={r.days}
@@ -100,6 +120,7 @@ export default function Stats() {
               <tr>
                 <th className="px-4 py-2 text-left">Время</th>
                 <th className="px-4 py-2 text-left">Модель</th>
+                <th className="px-4 py-2 text-left">Ошибка</th>
                 <th className="px-4 py-2 text-right">Код</th>
                 <th className="px-4 py-2 text-right">Latency</th>
                 <th className="px-4 py-2 text-right">TTFT</th>
@@ -115,6 +136,9 @@ export default function Stats() {
                   </td>
                   <td className="max-w-[360px] truncate px-4 py-2 font-mono text-xs text-slate-200">
                     {r.model}
+                  </td>
+                  <td className="max-w-[280px] truncate px-4 py-2 text-xs text-rose-300" title={r.error_msg}>
+                    {r.error_msg || '—'}
                   </td>
                   <td className={`px-4 py-2 text-right tabular-nums ${r.status_code >= 400 || r.status_code === 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                     {r.status_code || 'net'}
@@ -135,14 +159,14 @@ export default function Stats() {
               ))}
               {!requestsLoading && requests.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
                     Нет данных
                   </td>
                 </tr>
               )}
               {requestsLoading && requests.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
                     Загрузка…
                   </td>
                 </tr>

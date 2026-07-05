@@ -35,6 +35,31 @@ function ProviderSwitcher() {
   )
 }
 
+function ProviderNav() {
+  const { provider } = useProvider()
+
+  return (
+    <nav className="flex gap-1">
+      {navItems.map((item) => (
+        <NavLink
+          key={item.to}
+          to={{ pathname: item.to, search: `?provider=${provider}` }}
+          end={item.to === '/'}
+          className={({ isActive }) =>
+            `rounded-md px-3 py-1.5 text-sm font-medium transition ${
+              isActive
+                ? 'bg-slate-800 text-white'
+                : 'text-slate-400 hover:text-white'
+            }`
+          }
+        >
+          {item.label}
+        </NavLink>
+      ))}
+    </nav>
+  )
+}
+
 export default function Layout() {
   return (
     <ProviderProvider>
@@ -42,24 +67,7 @@ export default function Layout() {
         <header className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-3">
           <div className="flex items-center gap-6">
             <h1 className="text-base font-semibold text-white">LLM Gateway</h1>
-            <nav className="flex gap-1">
-              {navItems.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  className={({ isActive }) =>
-                    `rounded-md px-3 py-1.5 text-sm font-medium transition ${
-                      isActive
-                        ? 'bg-slate-800 text-white'
-                        : 'text-slate-400 hover:text-white'
-                    }`
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              ))}
-            </nav>
+            <ProviderNav />
           </div>
           <ProviderSwitcher />
         </header>

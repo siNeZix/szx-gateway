@@ -55,7 +55,8 @@ func TestModelStatsUsesUTCDay(t *testing.T) {
 	}
 	defer s.Close()
 
-	now := time.Now().UTC()
+	n := time.Now().UTC()
+	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	for _, r := range []*DBRequest{
 		{Timestamp: todayStart.Add(time.Hour), KeyHash: "k", Model: "m", StatusCode: 200, LatencyMs: 100, Provider: "aihubmix"},
@@ -112,10 +113,11 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 	}
 	defer s.Close()
 
-	now := time.Now().UTC()
+	n := time.Now().UTC()
+	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
 	for _, r := range []*DBRequest{
 		{Timestamp: now.Add(-time.Hour), KeyHash: "k1", Model: "m1", StatusCode: 200, PromptTokens: 2, CompletionTokens: 3, LatencyMs: 100, TTFTMs: 40, Provider: "openrouter"},
-		{Timestamp: now, KeyHash: "k2", Model: "m2", StatusCode: 429, LatencyMs: 300, TTFTMs: 300, IsStream: true, Provider: "openrouter"},
+		{Timestamp: now, KeyHash: "k2", Model: "m2", StatusCode: 429, ErrorMsg: "rate limited", LatencyMs: 300, TTFTMs: 300, IsStream: true, Provider: "openrouter"},
 	} {
 		if err := s.LogRequest(r); err != nil {
 			t.Fatal(err)
@@ -134,7 +136,7 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || !log[0].IsStream {
+	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || log[0].ErrorMsg != "rate limited" || !log[0].IsStream {
 		t.Fatalf("log = %+v", log)
 	}
 }

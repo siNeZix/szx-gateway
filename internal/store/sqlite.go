@@ -106,6 +106,7 @@ type RequestLogItem struct {
 	KeyHash   string `json:"key_hash"`
 	Model     string `json:"model"`
 	Status    int    `json:"status_code"`
+	ErrorMsg  string `json:"error_msg"`
 	Tokens    int64  `json:"tokens"`
 	LatencyMs int64  `json:"latency_ms"`
 	TTFTMs    int64  `json:"ttft_ms"`
@@ -612,7 +613,7 @@ func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, err
 	}
 	rows, err := s.db.Query(`
 		SELECT id, timestamp, provider, key_hash, model, status_code,
-		       prompt_tokens + completion_tokens, latency_ms, ttft_ms, is_stream
+		       COALESCE(error_msg, ''), prompt_tokens + completion_tokens, latency_ms, ttft_ms, is_stream
 		FROM requests
 		WHERE provider = ?
 		ORDER BY timestamp DESC, id DESC
@@ -628,7 +629,7 @@ func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, err
 		var item RequestLogItem
 		var ts time.Time
 		var isStream int
-		if err := rows.Scan(&item.ID, &ts, &item.Provider, &item.KeyHash, &item.Model, &item.Status, &item.Tokens, &item.LatencyMs, &item.TTFTMs, &isStream); err != nil {
+		if err := rows.Scan(&item.ID, &ts, &item.Provider, &item.KeyHash, &item.Model, &item.Status, &item.ErrorMsg, &item.Tokens, &item.LatencyMs, &item.TTFTMs, &isStream); err != nil {
 			return nil, err
 		}
 		item.Timestamp = ts.UTC().Format(time.RFC3339)
