@@ -38,11 +38,11 @@ var (
 		"recharge", "account suspended", "approved ip ranges",
 	}
 	aihubmixKeyRateMarkers = []string{
-		"rate_limit_error", "rate limit", "rate-limit", "rate limited", "too many requests",
+		"rate_limit_error", "rate limit", "rate-limit", "rate limited",
 		"requests per", "quota exceeded", "key limit", "account limit",
 	}
 	aihubmixProvider429Markers = []string{
-		"rate limited by provider", "provider rate", "model too many requests", "model overloaded",
+		"rate limited by provider", "provider rate", "model too many requests", "too many requests", "model overloaded",
 		"model is overloaded", "overloaded", "temporarily rate-limited", "temporarily rate limited",
 	}
 	aihubmixKeyModelMarkers = []string{
@@ -279,19 +279,22 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				finalErr = fmt.Errorf("key rate-limited with status %d", resp.StatusCode)
 				continue
 			case aihubmixRetryProviderOnce:
-				if provider429Retries > 0 {
+				if provider429Retries >= 3 {
 					log.Printf("[AIHubMix] provider/model 429 repeated, returning upstream response")
 					keyState.RollbackUsage()
 					h.pool.SyncKeyToDB(keyState)
+					resp.Status = "provider-rate-limit"
 					h.relayResponse(w, resp, firstBytes, bufReader, keyState, modelForLimits, startTime, ttftMs, isStream, true)
 					return
 				}
 				resp.Body.Close()
+				backoff := time.Duration(1<<provider429Retries) * time.Second
 				provider429Retries++
-				log.Printf("[AIHubMix] provider/model 429, trying another key once")
+				log.Printf("[AIHubMix] provider/model 429, backing off %s before trying another key", backoff)
 				keyState.RollbackUsage()
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("provider/model rate-limited with status %d", resp.StatusCode)
+				time.Sleep(backoff)
 				continue
 			case aihubmixRetryKeyModelLimit:
 				resp.Body.Close()
@@ -550,7 +553,7 @@ func classifyAIHubMixError(status int, data []byte) aihubmixErrorAction {
 		if has(aihubmixKeyRateMarkers) {
 			return aihubmixRetryKeyRateLimit
 		}
-		return aihubmixRetryKeyRateLimit
+		return aihubmixRetryProviderOnce
 	}
 	if has(aihubmixReturnMarkers) {
 		return aihubmixReturnToClient
