@@ -16,8 +16,8 @@ const RANGES = [
   { label: '7 дней', value: '7' },
   { label: '14 дней', value: '14' },
   { label: '30 дней', value: '30' },
-  { label: 'Сегодня по часам', value: 'hourly' },
-  { label: '6 часов / 10 минут', value: '10m' },
+  { label: '1 день', value: 'hourly' },
+  { label: '6 часов', value: '10m' },
 ]
 
 export default function Stats() {
