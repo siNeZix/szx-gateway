@@ -156,6 +156,23 @@ func TestRollbackUsageReactivatesExhaustedKey(t *testing.T) {
 	}
 }
 
+func TestRollbackThenCooldownDoesNotCountRateLimit(t *testing.T) {
+	ks := newState(20)
+	if !ks.TryReserve(time.Now()) {
+		t.Fatal("request should reserve")
+	}
+
+	ks.RollbackUsage()
+	ks.SetCooldown(time.Minute, "rate_limited")
+
+	if ks.UsageToday != 0 {
+		t.Fatalf("UsageToday = %d, want 0", ks.UsageToday)
+	}
+	if ks.Status != "rate_limited" {
+		t.Fatalf("status = %s, want rate_limited", ks.Status)
+	}
+}
+
 func TestReserveModelAtMaxLimitMarksDayExhausted(t *testing.T) {
 	ks := newState(20)
 	ks.MaxLimit = 10
