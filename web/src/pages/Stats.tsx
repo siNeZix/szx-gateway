@@ -13,14 +13,17 @@ import { api } from '../api/client'
 import { useProvider } from '../providers/provider'
 
 const RANGES = [
-  { label: '7 дней', days: 7 },
-  { label: '14 дней', days: 14 },
-  { label: '30 дней', days: 30 },
+  { label: '7 дней', value: '7' },
+  { label: '14 дней', value: '14' },
+  { label: '30 дней', value: '30' },
+  { label: 'Сегодня по часам', value: 'hourly' },
+  { label: '6 часов / 10 минут', value: '10m' },
 ]
 
 export default function Stats() {
   const { provider } = useProvider()
-  const [days, setDays] = useState(14)
+  const [range, setRange] = useState('14')
+  const days = Number(range) || 14
 
   const { data: trend = [], isLoading } = useQuery({
     queryKey: ['statsUsage', provider, days],
@@ -45,6 +48,15 @@ export default function Stats() {
     queryFn: () => api.requestLog(provider, 100),
     refetchInterval: 5_000,
   })
+
+  const chartData = range === 'hourly' ? hourly : range === '10m' ? tenMinutes : trend
+  const chartLoading = range === 'hourly' ? hourlyLoading : range === '10m' ? tenMinutesLoading : isLoading
+  const labelKey = range === 'hourly' || range === '10m' ? 'bucket' : 'day'
+  const formatLabel = range === 'hourly'
+    ? (v: string) => new Date(v).toLocaleTimeString([], { hour: '2-digit' })
+    : range === '10m'
+      ? (v: string) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : undefined
 
   const exportLogs = async () => {
     const logs = await api.requestLog(provider, 500)
@@ -75,10 +87,10 @@ export default function Stats() {
           </button>
           {RANGES.map((r) => (
             <button
-              key={r.days}
-              onClick={() => setDays(r.days)}
+              key={r.value}
+              onClick={() => setRange(r.value)}
               className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                days === r.days
+                range === r.value
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-800 text-slate-400 hover:text-white'
               }`}
@@ -91,54 +103,40 @@ export default function Stats() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Chart
-          title="Сегодня по часам"
-          isLoading={hourlyLoading}
-          data={hourly}
-          labelKey="bucket"
-          dataKey="requests"
-          color="#a78bfa"
-          formatLabel={(v) => new Date(v).toLocaleTimeString([], { hour: '2-digit' })}
-        />
-        <Chart
-          title="6 часов / 10 минут"
-          isLoading={tenMinutesLoading}
-          data={tenMinutes}
-          labelKey="bucket"
-          dataKey="requests"
-          color="#22d3ee"
-          formatLabel={(v) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        />
-        <Chart
-          title="Запросы по дням"
-          isLoading={isLoading}
-          data={trend}
-          labelKey="day"
+          title="Запросы"
+          isLoading={chartLoading}
+          data={chartData}
+          labelKey={labelKey}
           dataKey="requests"
           color="#818cf8"
+          formatLabel={formatLabel}
         />
         <Chart
-          title="Токены по дням"
-          isLoading={isLoading}
-          data={trend}
-          labelKey="day"
+          title="Токены"
+          isLoading={chartLoading}
+          data={chartData}
+          labelKey={labelKey}
           dataKey="tokens"
           color="#34d399"
+          formatLabel={formatLabel}
         />
         <Chart
           title="Средняя задержка (ms)"
-          isLoading={isLoading}
-          data={trend}
-          labelKey="day"
+          isLoading={chartLoading}
+          data={chartData}
+          labelKey={labelKey}
           dataKey="latency_avg_ms"
           color="#fbbf24"
+          formatLabel={formatLabel}
         />
         <Chart
-          title="Ошибки по дням"
-          isLoading={isLoading}
-          data={trend}
-          labelKey="day"
+          title="Ошибки"
+          isLoading={chartLoading}
+          data={chartData}
+          labelKey={labelKey}
           dataKey="errors"
           color="#fb7185"
+          formatLabel={formatLabel}
         />
       </div>
 
