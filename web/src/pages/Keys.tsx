@@ -1,7 +1,6 @@
 import {
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
@@ -9,7 +8,7 @@ import {
   type SortingState,
 } from '@tanstack/react-table'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { StatusBadge } from '../components/ui/basics'
 import { useProvider } from '../providers/provider'
@@ -49,6 +48,14 @@ export default function Keys() {
     const q = search.toLowerCase()
     return keys.filter((k) => k.masked_key.toLowerCase().includes(q))
   }, [keys, search])
+
+  useEffect(() => {
+    setSelected((prev) => {
+      const alive = new Set(keys.map((k) => k.key_hash))
+      const next = new Set([...prev].filter((hash) => alive.has(hash)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [keys])
 
   const columns = useMemo<ColumnDef<KeyUsageStats>[]>(
     () => [
@@ -171,11 +178,10 @@ export default function Keys() {
   const table = useReactTable({
     data: filtered,
     columns,
-    state: { sorting, globalFilter: search },
+    state: { sorting },
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     initialState: { pagination: { pageSize: PAGE_SIZE } },
   })

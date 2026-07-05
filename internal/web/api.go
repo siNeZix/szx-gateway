@@ -447,7 +447,7 @@ func (ws *WebServer) apiStatsUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, trend)
 }
 
-// GET /api/stats/usage/hourly?provider= — сегодня по локальным часам сервера.
+// GET /api/stats/usage/hourly?provider= — последние 24 часа по локальным часам сервера.
 func (ws *WebServer) apiStatsUsageHourly(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -456,8 +456,7 @@ func (ws *WebServer) apiStatsUsageHourly(w http.ResponseWriter, r *http.Request)
 
 	provider, _ := providerFromRequest(r)
 	now := time.Now().In(time.Local)
-	since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	buckets, err := ws.store.GetUsageBuckets(provider, now, since, time.Hour)
+	buckets, err := ws.store.GetUsageBuckets(provider, now, now.Add(-24*time.Hour), time.Hour)
 	if err != nil {
 		log.Printf("apiStatsUsageHourly: GetUsageBuckets(%s): %v", provider, err)
 		writeAPIError(w, http.StatusInternalServerError, "usage buckets failed")
@@ -486,8 +485,20 @@ func (ws *WebServer) apiStatsUsage5m(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buckets)
 }
 
-// GET /api/v2/requests?provider=&limit=100 — последние запросы без payload/body.
+// GET /api/v2/requests?provider=&limit=100|all — последние запросы без payload/body.
+// DELETE /api/v2/requests?provider= — очистить логи провайдера.
 func (ws *WebServer) apiRequests(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		provider, _ := providerFromRequest(r)
+		deleted, err := ws.store.ClearRequestLog(provider)
+		if err != nil {
+			log.Printf("apiRequests: ClearRequestLog(%s): %v", provider, err)
+			writeAPIError(w, http.StatusInternalServerError, "request log clear failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int64{"deleted": deleted})
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -495,7 +506,9 @@ func (ws *WebServer) apiRequests(w http.ResponseWriter, r *http.Request) {
 
 	provider, _ := providerFromRequest(r)
 	limit := 100
-	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 500 {
+	if r.URL.Query().Get("limit") == "all" {
+		limit = 0
+	} else if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 500 {
 		limit = n
 	}
 

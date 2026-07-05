@@ -36,14 +36,12 @@ function ProviderSwitcher() {
 }
 
 function ProviderNav() {
-  const { provider } = useProvider()
-
   return (
     <nav className="flex gap-1">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
-          to={{ pathname: item.to, search: `?provider=${provider}` }}
+          to={item.to}
           end={item.to === '/'}
           className={({ isActive }) =>
             `rounded-md px-3 py-1.5 text-sm font-medium transition ${

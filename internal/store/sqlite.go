@@ -409,8 +409,8 @@ func (s *Store) GetModelUsageTrend(provider string, days int) ([]ModelUsageTrend
 	if days <= 0 {
 		days = 14
 	}
-	since := time.Now().UTC().AddDate(0, 0, -days+1)
-	since = time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now().In(time.Local)
+	since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -days+1)
 	rows, err := s.db.Query(`
 		SELECT timestamp, status_code, prompt_tokens + completion_tokens, latency_ms
 		FROM requests
@@ -431,7 +431,7 @@ func (s *Store) GetModelUsageTrend(provider string, days int) ([]ModelUsageTrend
 		if err := rows.Scan(&ts, &status, &tokens, &latency); err != nil {
 			return nil, err
 		}
-		day := UTCDay(ts)
+		day := ts.In(time.Local).Format("2006-01-02")
 		item := byDay[day]
 		if item == nil {
 			item = &ModelUsageTrend{Day: day}
@@ -692,17 +692,23 @@ func (s *Store) LogRequest(r *DBRequest) error {
 }
 
 func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, error) {
-	if limit <= 0 || limit > 500 {
+	if limit < 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.db.Query(`
+	query := `
 		SELECT id, timestamp, provider, key_hash, model, status_code,
 		       COALESCE(error_msg, ''), prompt_tokens + completion_tokens, latency_ms, ttft_ms, is_stream
 		FROM requests
 		WHERE provider = ?
 		ORDER BY timestamp DESC, id DESC
-		LIMIT ?
-	`, provider, limit)
+`
+	args := []any{provider}
+	if limit > 0 {
+		query += `		LIMIT ?
+`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -721,6 +727,14 @@ func (s *Store) GetRequestLog(provider string, limit int) ([]RequestLogItem, err
 		res = append(res, item)
 	}
 	return res, rows.Err()
+}
+
+func (s *Store) ClearRequestLog(provider string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM requests WHERE provider = ?`, provider)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // ponytail: raw logs are written forever. Purging logic can be added when DB size is a concern.
@@ -931,8 +945,8 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 		return nil, err
 	}
 
-	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now().In(time.Local)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	err = s.db.QueryRow(`SELECT COUNT(*) FROM requests WHERE timestamp >= ? AND provider = ?`, todayStart, provider).Scan(&stats.TodayRequests)
 	if err != nil {
 		return nil, err
@@ -942,8 +956,8 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 }
 
 func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
-	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now().In(time.Local)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	rows, err := s.db.Query(`
 		SELECT 
 			model, 
