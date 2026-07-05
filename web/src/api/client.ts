@@ -45,6 +45,11 @@ async function postJSON<T>(path: string, payload: unknown): Promise<T> {
   return unwrap<T>(res)
 }
 
+async function deleteJSON<T>(path: string): Promise<T> {
+  const res = await fetch(path, { method: 'DELETE' })
+  return unwrap<T>(res)
+}
+
 export const api = {
   providers: () => getJSON<ProviderInfo[]>('/api/v2/providers'),
 
@@ -65,10 +70,13 @@ export const api = {
   statsUsage5m: (provider: Provider) =>
     getJSON<UsageBucket[]>(`/api/v2/stats/usage/5m?provider=${provider}`),
 
-  requestLog: (provider: Provider, limit = 100) =>
+  requestLog: (provider: Provider, limit: number | 'all' = 100) =>
     getJSON<RequestLogItem[]>(
       `/api/v2/requests?provider=${provider}&limit=${limit}`,
     ),
+
+  clearRequestLog: (provider: Provider) =>
+    deleteJSON<{ deleted: number }>(`/api/v2/requests?provider=${provider}`),
 
   models: (provider: Provider) =>
     getJSON<ModelsResponse>(`/api/v2/models?provider=${provider}`),

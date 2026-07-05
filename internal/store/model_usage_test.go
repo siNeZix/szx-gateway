@@ -48,16 +48,16 @@ func TestModelExhaustedIsPerModel(t *testing.T) {
 	}
 }
 
-func TestModelStatsUsesUTCDay(t *testing.T) {
+func TestModelStatsUsesLocalDay(t *testing.T) {
 	s, err := New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 
-	n := time.Now().UTC()
-	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	n := time.Now().In(time.Local)
+	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.Local)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	for _, r := range []*DBRequest{
 		{Timestamp: todayStart.Add(time.Hour), KeyHash: "k", Model: "m", StatusCode: 200, LatencyMs: 100, Provider: "aihubmix"},
 		{Timestamp: todayStart.Add(-time.Hour), KeyHash: "k", Model: "m", StatusCode: 200, LatencyMs: 300, Provider: "aihubmix"},
@@ -79,15 +79,15 @@ func TestModelStatsUsesUTCDay(t *testing.T) {
 	}
 }
 
-func TestGeneralStatsUsesUTCDay(t *testing.T) {
+func TestGeneralStatsUsesLocalDay(t *testing.T) {
 	s, err := New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 
-	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now().In(time.Local)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	for _, r := range []*DBRequest{
 		{Timestamp: todayStart.Add(time.Hour), KeyHash: "k", Model: "m", StatusCode: 200, Provider: "openrouter"},
 		{Timestamp: todayStart.Add(-time.Hour), KeyHash: "k", Model: "m", StatusCode: 200, Provider: "openrouter"},
@@ -138,6 +138,22 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 	}
 	if len(log) != 1 || log[0].Model != "m2" || log[0].Status != 429 || log[0].StatusText != "rate limited" || !log[0].IsStream {
 		t.Fatalf("log = %+v", log)
+	}
+
+	all, err := s.GetRequestLog("openrouter", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all logs = %d", len(all))
+	}
+
+	deleted, err := s.ClearRequestLog("openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d", deleted)
 	}
 }
 

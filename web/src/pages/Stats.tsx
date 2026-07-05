@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   CartesianGrid,
   Line,
@@ -19,10 +19,33 @@ const RANGES = [
   { label: '14 дней', value: '14' },
   { label: '30 дней', value: '30' },
 ]
+const RANGE_STORAGE_KEY = 'gateway.statsRange'
+
+function savedRange() {
+  const value = localStorage.getItem(RANGE_STORAGE_KEY)
+  return value && RANGES.some((r) => r.value === value) ? value : '7'
+}
+
+function localDateTime(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function downloadLogs(provider: string, logs: unknown[], suffix: string) {
+  const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `gateway-logs-${provider}-${suffix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
 
 export default function Stats() {
   const { provider } = useProvider()
-  const [range, setRange] = useState('14')
+  const queryClient = useQueryClient()
+  const [range, setRangeState] = useState(savedRange)
   const days = Number(range) || 14
 
   const { data: trend = [], isLoading } = useQuery({
@@ -58,17 +81,25 @@ export default function Stats() {
       ? (v: string) => new Date(v).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : undefined
 
-  const exportLogs = async () => {
-    const logs = await api.requestLog(provider, 500)
-    const blob = new Blob([JSON.stringify(logs, null, 2)], {
-      type: 'application/json',
-    })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `gateway-logs-${provider}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
-    link.click()
-    URL.revokeObjectURL(url)
+  const setRange = (value: string) => {
+    setRangeState(value)
+    localStorage.setItem(RANGE_STORAGE_KEY, value)
+  }
+
+  const clearLogsMutation = useMutation({
+    mutationFn: () => api.clearRequestLog(provider),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['requestLog', provider] })
+      queryClient.invalidateQueries({ queryKey: ['stats', provider] })
+      queryClient.invalidateQueries({ queryKey: ['statsUsage', provider] })
+      queryClient.invalidateQueries({ queryKey: ['statsUsageHourly', provider] })
+      queryClient.invalidateQueries({ queryKey: ['statsUsage5m', provider] })
+    },
+  })
+
+  const exportLogs = async (limit: number | 'all') => {
+    const logs = await api.requestLog(provider, limit)
+    downloadLogs(provider, logs, limit === 'all' ? 'all' : String(limit))
   }
 
   return (
@@ -78,13 +109,36 @@ export default function Stats() {
           Статистика использования ({provider})
         </h2>
         <div className="flex gap-1">
-          <button
-            onClick={exportLogs}
-            disabled={requests.length === 0}
-            className="rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300 transition hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Экспорт логов
-          </button>
+          <details className="relative">
+            <summary className="cursor-pointer rounded-md bg-slate-800 px-3 py-1 text-xs font-medium text-slate-300 transition hover:text-white">
+              Логи
+            </summary>
+            <div className="absolute right-0 z-20 mt-2 w-44 rounded-lg border border-slate-700 bg-slate-900 p-1 text-xs shadow-xl">
+              <button
+                onClick={() => exportLogs(100)}
+                disabled={requests.length === 0}
+                className="block w-full rounded px-3 py-2 text-left text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Скачать 100 последних
+              </button>
+              <button
+                onClick={() => exportLogs('all')}
+                disabled={requests.length === 0}
+                className="block w-full rounded px-3 py-2 text-left text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Скачать все
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm(`Очистить все логи ${provider}?`)) clearLogsMutation.mutate()
+                }}
+                disabled={requests.length === 0 || clearLogsMutation.isPending}
+                className="block w-full rounded px-3 py-2 text-left text-rose-300 hover:bg-rose-950/40 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Очистить все
+              </button>
+            </div>
+          </details>
           {RANGES.map((r) => (
             <button
               key={r.value}
@@ -164,7 +218,7 @@ export default function Stats() {
               {requests.map((r) => (
                 <tr key={r.id} className="border-t border-slate-800">
                   <td className="whitespace-nowrap px-4 py-2 text-xs text-slate-400">
-                    {new Date(r.timestamp).toLocaleString()}
+                    {localDateTime(r.timestamp)}
                   </td>
                   <td className="max-w-[360px] truncate px-4 py-2 font-mono text-xs text-slate-200">
                     {r.model}
@@ -257,6 +311,7 @@ function Chart({
             />
             <YAxis stroke="#64748b" fontSize={11} tickLine={false} />
             <Tooltip
+              labelFormatter={(v) => formatLabel ? formatLabel(String(v)) : localDateTime(String(v))}
               contentStyle={{
                 backgroundColor: '#1e293b',
                 border: '1px solid #334155',

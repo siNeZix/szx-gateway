@@ -7,8 +7,10 @@ import {
 } from 'react'
 import type { Provider } from '../types'
 
-// Провайдер хранится в URL (?provider=) и в реактивном состоянии.
+// Провайдер хранится в localStorage и в реактивном состоянии.
 // Ponytail: без Zustand — useState + Context достаточно, переключатель в шапке.
+
+const STORAGE_KEY = 'gateway.provider'
 
 interface ProviderCtx {
   provider: Provider
@@ -19,8 +21,7 @@ const Ctx = createContext<ProviderCtx | null>(null)
 
 export function ProviderProvider({ children }: { children: ReactNode }) {
   const [provider, setProvider] = useState<Provider>(() => {
-    const url = new URL(window.location.href)
-    const p = url.searchParams.get('provider')
+    const p = localStorage.getItem(STORAGE_KEY)
     return p === 'aihubmix' ? 'aihubmix' : 'openrouter'
   })
 
@@ -29,10 +30,7 @@ export function ProviderProvider({ children }: { children: ReactNode }) {
       provider,
       setProvider: (p: Provider) => {
         setProvider(p)
-        // Синхронизируем URL, чтобы при reload состояние сохранялось.
-        const url = new URL(window.location.href)
-        url.searchParams.set('provider', p)
-        window.history.replaceState({}, '', url)
+        localStorage.setItem(STORAGE_KEY, p)
       },
     }),
     [provider],
