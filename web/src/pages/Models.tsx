@@ -10,18 +10,33 @@ export default function Models() {
     queryFn: () => api.models(provider),
   })
   const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<'name' | 'date' | 'context'>('name')
 
   const free = data?.free_models ?? []
   const top = data?.top_models ?? []
 
   const filteredFree = useMemo(() => {
-    if (!search.trim()) return free
     const q = search.toLowerCase()
-    return free.filter(
-      (m) =>
-        m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-    )
-  }, [free, search])
+    return free
+      .filter(
+        (m) =>
+          !q.trim() ||
+          m.id.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q),
+      )
+      .toSorted((a, b) => {
+        if (sort === 'context') {
+          return b.context_length - a.context_length || a.id.localeCompare(b.id)
+        }
+        if (sort === 'date') {
+          return (
+            Date.parse(b.updated_at) - Date.parse(a.updated_at) ||
+            a.id.localeCompare(b.id)
+          )
+        }
+        return (a.name || a.id).localeCompare(b.name || b.id) || a.id.localeCompare(b.id)
+      })
+  }, [free, search, sort])
 
   const copyMarkdown = () => {
     const lines = [
@@ -42,12 +57,23 @@ export default function Models() {
         <h2 className="text-lg font-semibold text-white">
           Модели ({provider})
         </h2>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="поиск…"
-          className="w-48 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none focus:border-indigo-500"
-        />
+        <div className="flex gap-2">
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none focus:border-indigo-500"
+          >
+            <option value="name">по имени</option>
+            <option value="date">по дате</option>
+            <option value="context">по контексту</option>
+          </select>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="поиск…"
+            className="w-48 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 outline-none focus:border-indigo-500"
+          />
+        </div>
       </div>
 
       {top.length > 0 && (
