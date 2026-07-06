@@ -1,133 +1,108 @@
-# OpenRouter Free LLM Gateway (Go)
+# OpenRouter Gateway
 
-Умный, отказоустойчивый прокси-шлюз (Gateway) для ротации OpenRouter API ключей. Идеально подходит для больших пулов (1000+ ключей), работает исключительно со свободными (free) моделями, предотвращает лимиты запросов и автоматически подбирает наименее загруженные ключи.
+OpenAI-compatible шлюз для ротации ключей OpenRouter и AIHubMix. Держит ключи в SQLite, ретраит запросы на других ключах, показывает админку и отдаёт только free-модели.
 
----
+## Что умеет
 
-## 🚀 Основные возможности
+- `/v1/chat/completions` и `/v1/models` как у OpenAI.
+- Два провайдера одновременно: OpenRouter и AIHubMix.
+- Ротация ключей с учётом статуса, дневного лимита и минутного rate limit.
+- Retry/fallback при `429`, `401` и `5xx` до `-max-retries` раз.
+- Алиасы моделей `top1`, `top2`, `top3` из Shir-Man ranking.
+- Web UI с Basic Auth: ключи, bulk-операции, статистика, модели, прокси.
+- SQLite без CGO (`modernc.org/sqlite`).
 
-- **Совместимость с OpenAI API:** Заменяет стандартный эндпоинт `/v1/chat/completions` и `/v1/models`, позволяя легко подключать Cursor, Open WebUI, RAG-системы и любые кодинг-агенты.
-- **Умная ротация:** На каждый запрос выбирается ключ с наименьшим использованием за текущие сутки, не находящийся в cooldown и не превысивший минутный лимит.
-- **Контроль лимитов (Rate Limits & Quota):**
-  - **req/min:** Скользящее окно на 1 минуту по каждому ключу в памяти (дефолт 20 запр/мин).
-  - **req/day:** Автоопределение дневного лимита ключа (50/день для free, 1000/день для пополненных аккаунтов) через API `/api/v1/key`.
-  - Автоматический сброс дневного лимита и счётчиков использования в полночь по локальному времени сервера.
-- **Интеграция с Shir-Man API:** Автоматически раз в час загружает актуальный топ моделей с [shir-man.com/free-llm](https://shir-man.com/free-llm/).
-  - Поддержка алиасов `top1`, `top2`, `top3` (прокси сам транслирует их в актуальные ID, например, `nex-agi/nex-n2-pro:free`).
-  - Фильтрация: запросы на платные модели автоматически блокируются для экономии.
-- **Отказоустойчивость и ретраи (Auto Fallback):** При ошибках `429 Too Many Requests`, `401 Unauthorized` или временных сбоях `5xx`, шлюз помечает ключ, вешает cooldown и **моментально повторяет запрос на другом ключе** (до 5 раз).
-- **База данных SQLite (Pure Go):** Состояние лимитов, кэш моделей и подробная статистика использования каждого ключа/модели сохраняются в локальной БД `gateway.db` (работает без CGO).
-- **Встроенный SPA Web UI:** React + TypeScript + Vite, вшит в Go-бинарник через `go:embed` (защищен Basic Auth).
-  - Управление ключами: добавление пачкой, поиск, фильтры, сортировка, пагинация, bulk enable/disable/delete.
-  - Дашборд, графики использования, модели и free-ранкинг.
-  - Переключение провайдеров `openrouter` / `aihubmix` без перезапуска.
+## Быстрый старт
 
----
-
-## 🛠️ Быстрый старт
-
-### 1. Запуск Gateway
-
-Шлюз настраивается через флаги командной строки или переменные окружения.
-
-**Запуск с дефолтными настройками:**
-```bash
-./gateway.exe
-```
-
-**Все доступные флаги:**
-```bash
-  -token string
-        Токен авторизации для клиентов шлюза (дефолт: "super-secret-gateway-token")
-        Или через переменную окружения GATEWAY_TOKEN
-
-  -db-path string
-        Путь к файлу БД SQLite (дефолт: "gateway.db")
-        Или через DB_PATH
-
-  -listen string
-        Адрес и порт сервера (дефолт: ":8080")
-        Или через LISTEN_ADDR
-
-  -ranking-refresh duration
-        Периодичность обновления топа Shir-Man (дефолт: 1h)
-        Или через RANKING_REFRESH
-
-  -key-ttl duration
-        Период валидности проверки ключа чекером (дефолт: 1h)
-        Или через KEY_CHECK_TTL
-
-  -web-user string
-        Логин для входа в Web UI (дефолт: "admin")
-        Или через WEB_USERNAME
-
-  -web-pass string
-        Пароль для входа в Web UI (дефолт: "admin")
-        Или через WEB_PASSWORD
-```
-
-*Пример запуска с кастомными авторизационными данными:*
-```bash
-./gateway.exe -token my-agent-token -web-user dev -web-pass superpass -listen :9000
-```
-
----
-
-## 📊 Веб-интерфейс (Web UI)
-
-После запуска перейдите в браузере по адресу:  
-👉 **`http://localhost:8080`**  
-*(или ваш кастомный порт)*
-
-Вставьте логин/пароль (по умолчанию `admin` / `admin`). UI — SPA с маршрутами:
-1. `/` — дашборд со сводкой и топом моделей.
-2. `/keys` — таблица ключей, bulk-действия, добавление пачкой.
-3. `/stats` — графики запросов, токенов, latency и ошибок.
-4. `/models` — free-модели, поиск, копирование таблицы в Markdown.
-
----
-
-## 🔌 Подключение к клиентам (Cursor, Open WebUI и др.)
-
-Поскольку шлюз полностью совместим с OpenAI API, вы можете использовать его в любом приложении.
-
-### Параметры подключения:
-- **Base URL:** `http://localhost:8080/v1`  *(или `http://<ip-сервера>:8080/v1`)*
-- **API Key:** `<ваш GATEWAY_TOKEN>` *(по умолчанию `super-secret-gateway-token`)*
-- **Model:**
-  - `top1` — использовать лучшую модель на сегодняшний день.
-  - `top2` — использовать вторую модель.
-  - `top3` — использовать третью модель.
-  - Либо любой конкретный ID свободной модели (например, `google/gemma-2-9b-it:free` или `openrouter/free`).
-
----
-
-## ⚙️ Как устроен фоновый чекер ключей?
-
-Проверить 1000+ ключей на OpenRouter за раз невозможно — забанят за спам. Поэтому шлюз использует **контролируемый фоновый чекер**:
-- Он работает с ограничением скорости (например, делает **не более 200 запросов в минуту**, отправляя запросы раз в 300мс).
-- Для проверки используется быстрый и бесплатный GET эндпоинт `/api/v1/key`, который **не расходует дневной лимит чата (tokens/messages)**.
-- Дополнительно шлюз работает **лениво**: если в процессе работы (проксирования) ключ ловит ошибку, его статус мгновенно обновляется без участия фонового чекера. Если ключ отработал успешно, его счетчик `LimitRemaining` обновляется из заголовка `X-RateLimit-Remaining` в ответе сервера.
-
----
-
-## 🛠️ Разработка и сборка
-
-Требуется Go 1.26.3. Для пересборки SPA локально нужен Node.js 24+.
-
-**Сборка проекта:**
-```bash
-npm --prefix web ci
-npm --prefix web run build
-go build -o gateway cmd/gateway/main.go
-```
-
-Docker-сборка сама собирает SPA в Node-stage и затем Go-бинарник:
 ```bash
 docker compose up -d --build
 ```
 
-**Форматирование кода:**
+По умолчанию compose публикует:
+
+- `http://localhost:1005` — OpenRouter gateway и Web UI.
+- `http://localhost:1006` — AIHubMix gateway и тот же Web UI.
+
+Локально без Docker:
+
 ```bash
-go fmt ./...
+npm --prefix web ci
+npm --prefix web run build
+go run cmd/gateway/main.go
 ```
+
+## Настройка
+
+Через `.env`, env-переменные или флаги:
+
+```env
+GATEWAY_TOKEN=change-me
+WEB_USERNAME=admin
+WEB_PASSWORD=admin
+DB_PATH=/data/gateway.db
+LISTEN_ADDR=:8080
+AIHUBMIX_LISTEN_ADDR=:8081
+RANKING_REFRESH=1h
+KEY_CHECK_TTL=1h
+KEY_CHECK_INTERVAL=1m
+```
+
+Флаги:
+
+```bash
+go run cmd/gateway/main.go \
+  -token change-me \
+  -web-user admin \
+  -web-pass admin \
+  -listen :8080 \
+  -aihubmix-listen :8081 \
+  -db-path gateway.db \
+  -ranking-refresh 1h \
+  -key-ttl 1h \
+  -key-check-rate 200 \
+  -key-check-interval 1m \
+  -key-check-concurrency 5 \
+  -max-retries 5
+```
+
+## Подключение клиентов
+
+OpenRouter:
+
+- Base URL: `http://localhost:1005/v1`
+- API Key: значение `GATEWAY_TOKEN`
+- Model: `top1`, `top2`, `top3` или конкретная free-модель OpenRouter
+
+AIHubMix:
+
+- Base URL: `http://localhost:1006/v1`
+- API Key: значение `GATEWAY_TOKEN`
+- Model: конкретная free-модель AIHubMix
+
+Пример:
+
+```bash
+curl http://localhost:1005/v1/chat/completions \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"top1","messages":[{"role":"user","content":"ping"}]}'
+```
+
+## Web UI
+
+Откройте `http://localhost:1005` или `http://localhost:1006`.
+
+Логин/пароль по умолчанию: `admin` / `admin`.
+
+Ключи добавляются в UI по провайдерам. API админки живёт под `/api/v2/*` и защищён тем же Basic Auth.
+
+## Разработка
+
+```bash
+go test ./...
+go fmt ./...
+npm --prefix web run build
+go build -o build/gateway.exe cmd/gateway/main.go
+```
+
+Go: `1.26.3`. Node: `24+`.
