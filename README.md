@@ -1,4 +1,4 @@
-# OpenRouter Gateway
+# SZX Gateway
 
 OpenAI-compatible шлюз для ротации ключей OpenRouter и AIHubMix. Держит ключи в SQLite, ретраит запросы на других ключах, показывает админку и отдаёт только free-модели.
 
@@ -20,8 +20,8 @@ docker compose up -d --build
 
 По умолчанию compose публикует:
 
-- `http://localhost:1005` — OpenRouter gateway и Web UI.
-- `http://localhost:1006` — AIHubMix gateway и тот же Web UI.
+- `http://localhost:1005` — SZX Gateway для OpenRouter и Web UI.
+- `http://localhost:1006` — SZX Gateway для AIHubMix и тот же Web UI.
 
 Локально без Docker:
 

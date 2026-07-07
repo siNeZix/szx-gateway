@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"openrouter-gateway/internal/config"
-	"openrouter-gateway/internal/keys"
-	"openrouter-gateway/internal/models"
-	"openrouter-gateway/internal/proxies"
-	"openrouter-gateway/internal/store"
-	"openrouter-gateway/internal/web"
+	"szx-gateway/internal/config"
+	"szx-gateway/internal/keys"
+	"szx-gateway/internal/models"
+	"szx-gateway/internal/proxies"
+	"szx-gateway/internal/store"
+	"szx-gateway/internal/web"
 )
 
 // apiEnvelope распаковывает единый конверт ответа {data:...} или {error:...}.
@@ -128,7 +128,7 @@ func TestAPI_Contract(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &stats); err != nil {
 		t.Fatalf("unmarshal stats: %v", err)
 	}
-	for _, key := range []string{"general", "models", "keys", "top_models", "refreshed_at"} {
+	for _, key := range []string{"general", "models", "keys", "daily_limits", "top_models", "refreshed_at"} {
 		if _, ok := stats[key]; !ok {
 			t.Errorf("stats missing key %q; got %v", key, keysOf(stats))
 		}

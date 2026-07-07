@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/store"
 )
 
 func newState(rateLimit int) *KeyState {

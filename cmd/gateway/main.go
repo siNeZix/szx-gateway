@@ -9,17 +9,17 @@ import (
 	"syscall"
 	"time"
 
-	"openrouter-gateway/internal/config"
-	"openrouter-gateway/internal/keys"
-	"openrouter-gateway/internal/models"
-	"openrouter-gateway/internal/proxies"
-	"openrouter-gateway/internal/proxy"
-	"openrouter-gateway/internal/store"
-	"openrouter-gateway/internal/web"
+	"szx-gateway/internal/config"
+	"szx-gateway/internal/keys"
+	"szx-gateway/internal/models"
+	"szx-gateway/internal/proxies"
+	"szx-gateway/internal/proxy"
+	"szx-gateway/internal/store"
+	"szx-gateway/internal/web"
 )
 
 func main() {
-	log.Println("Starting LLM Gateway (OpenRouter + AIHubMix)...")
+	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix)...")
 
 	cfg := config.Load()
 	log.Printf("OpenRouter on %s, AIHubMix on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr)
@@ -76,6 +76,29 @@ func main() {
 	aihubmixChecker.Start()
 	log.Println("Background key checker started (AIHubMix).")
 
+	// ponytail: фоновый сброс дневных счётчиков раз в минуту. Решает баг
+	// "использовано за сегодня не сбросилось после UTC+0" — без этого сброс
+	// происходит только лениво, при первом запросе через ключ.
+	dailyResetCtx, dailyResetCancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dailyResetCtx.Done():
+				return
+			case <-ticker.C:
+				if n := openRouterPool.ResetExpiredDailyUsage(); n > 0 {
+					log.Printf("Daily reset: %d openrouter keys cleared", n)
+				}
+				if n := aihubmixPool.ResetExpiredDailyUsage(); n > 0 {
+					log.Printf("Daily reset: %d aihubmix keys cleared", n)
+				}
+			}
+		}
+	}()
+	log.Println("Daily usage reset worker started (1m interval).")
+
 	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr, proxyPool)
 	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr, proxyPool)
 
@@ -116,6 +139,7 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down gracefully...")
+	dailyResetCancel()
 	keyChecker.Stop()
 	aihubmixChecker.Stop()
 
@@ -128,5 +152,5 @@ func main() {
 		log.Printf("AIHubMix shutdown error: %v", err)
 	}
 
-	log.Println("LLM Gateway stopped.")
+	log.Println("SZX Gateway stopped.")
 }

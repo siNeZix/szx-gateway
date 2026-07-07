@@ -4,11 +4,11 @@ import (
 	"crypto/subtle"
 	"net/http"
 
-	"openrouter-gateway/internal/config"
-	"openrouter-gateway/internal/keys"
-	"openrouter-gateway/internal/models"
-	"openrouter-gateway/internal/proxies"
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/config"
+	"szx-gateway/internal/keys"
+	"szx-gateway/internal/models"
+	"szx-gateway/internal/proxies"
+	"szx-gateway/internal/store"
 )
 
 type WebServer struct {
@@ -45,7 +45,7 @@ func (ws *WebServer) basicAuth(next http.HandlerFunc) http.HandlerFunc {
 		user, pass, ok := r.BasicAuth()
 		if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(ws.cfg.WebUsername)) != 1 ||
 			subtle.ConstantTimeCompare([]byte(pass), []byte(ws.cfg.WebPassword)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="OpenRouter Gateway"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="SZX Gateway"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("Unauthorized\n"))
 			return

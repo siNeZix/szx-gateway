@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"openrouter-gateway/internal/proxies"
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/proxies"
+	"szx-gateway/internal/store"
 )
 
 type OpenRouterKeyResponse struct {
@@ -239,6 +239,16 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 			if ks.LimitRemaining <= 0 && ks.MaxLimit > 0 {
 				ks.Status = "day_exhausted"
 			} else {
+				// OpenRouter сбросил дневной лимит (limit_remaining > 0):
+				// синхронизируем локальный счётчик из апстрима, иначе он навечно отстанет.
+				if ks.Status == "day_exhausted" {
+					// ponytail: MaxLimit - LimitRemaining = использовано сегодня.
+					// Точнее простого обнуления — совпадает с тем, что видит OpenRouter.
+					ks.UsageToday = ks.MaxLimit - ks.LimitRemaining
+					if ks.UsageToday < 0 {
+						ks.UsageToday = 0
+					}
+				}
 				ks.Status = "active"
 			}
 

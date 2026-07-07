@@ -19,7 +19,7 @@ const RANGES = [
   { label: '14 дней', value: '14' },
   { label: '30 дней', value: '30' },
 ]
-const RANGE_STORAGE_KEY = 'gateway.statsRange'
+const RANGE_STORAGE_KEY = 'szx.statsRange'
 
 function savedRange() {
   const value = localStorage.getItem(RANGE_STORAGE_KEY)
@@ -37,7 +37,7 @@ function downloadLogs(provider: string, logs: unknown[], suffix: string) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `gateway-logs-${provider}-${suffix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
+  link.download = `szx-logs-${provider}-${suffix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
   link.click()
   URL.revokeObjectURL(url)
 }

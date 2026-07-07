@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"szx-gateway/internal/limits"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -375,6 +376,11 @@ func (s *Store) migrate() error {
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
 	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
 	_, _ = s.db.Exec(`UPDATE keys SET status = 'unchecked' WHERE provider = 'aihubmix' AND status = 'day_exhausted';`)
+	// ponytail: стартовый сброс для openrouter при рестарте после UTC-полуночи —
+	// покрывает кейс, когда in-memory состояние ещё не загружено, а UI уже читает БД.
+	// substr вместо date(): modernc пишет time.Time как "2026-07-06 23:30:45 +0000 UTC",
+	//SQLite date() это не парсит → NULL → сравнение всегда false.
+	_, _ = s.db.Exec(`UPDATE keys SET usage_today = 0 WHERE provider = 'openrouter' AND substr(last_used_at, 1, 10) < date('now') AND usage_today > 0;`)
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix');`)
 
 	return nil
@@ -869,10 +875,15 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	}
 	defer tx.Rollback()
 
+	maxLimit := int64(0)
+	if provider == "aihubmix" {
+		maxLimit = limits.AIHubMixFreeRequestsDay
+	}
+
 	stmt, err := tx.Prepare(`
-		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider)
-		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?)
-		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider;
+		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit)
+		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider, max_limit=excluded.max_limit;
 	`)
 	if err != nil {
 		return 0, err
@@ -885,7 +896,7 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	for _, k := range keys {
 		h := HashKey(k)
 		masked := MaskKey(k)
-		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider)
+		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider, maxLimit)
 		if err != nil {
 			return 0, err
 		}
@@ -1322,7 +1333,12 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 			k.masked_key, 
 			k.key_hash, 
 			k.status, 
-			k.usage_today, 
+		-- ponytail: defensive reset на стороне SQL. Если последний запрос через ключ
+		-- был в прошлом UTC-дне, отдаём 0 — страхует первые секунды после полуночи,
+		-- пока фоновый тикер (main.go) не сбросил usage_today в памяти и БД.
+		-- substr вместо date(): modernc пишет time.Time как "2026-07-06 23:30:45 +0000 UTC",
+		-- SQLite date() это не парсит → NULL → сравнение всегда false.
+		CASE WHEN substr(k.last_used_at, 1, 10) < date('now') THEN 0 ELSE k.usage_today END AS usage_today,
 			k.max_limit, 
 			k.cooldown_until,
 			k.last_used_at,

@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/limits"
+	"szx-gateway/internal/store"
 )
 
 // Единый конверт ответа API: { data: ... } или { error: "..." }.
@@ -80,6 +81,38 @@ type providerInfo struct {
 	BaseURL    string `json:"base_url"`
 	TotalKeys  int    `json:"total_keys"`
 	ActiveKeys int    `json:"active_keys"`
+}
+
+type dailyLimitsInfo struct {
+	Total     int64  `json:"total"`
+	Used      int64  `json:"used"`
+	Remaining int64  `json:"remaining"`
+	Source    string `json:"source"`
+	Models    []any  `json:"models"`
+}
+
+func dailyLimits(provider string, keys []store.KeyUsageStats) dailyLimitsInfo {
+	info := dailyLimitsInfo{Source: "static", Models: []any{}}
+	for _, k := range keys {
+		if k.Status == "disabled" || k.Status == "invalid" {
+			continue
+		}
+		limit := k.Limit
+		if provider == "openrouter" {
+			limit = limits.OpenRouterFreeRequestsDay
+		}
+		if limit <= 0 {
+			continue
+		}
+		info.Total += limit
+		used := k.TodayUsage
+		if used > limit {
+			used = limit
+		}
+		info.Used += used
+	}
+	info.Remaining = info.Total - info.Used
+	return info
 }
 
 // GET /api/providers — список известных провайдеров со сводным статусом.
@@ -557,6 +590,7 @@ func (ws *WebServer) apiStats(w http.ResponseWriter, r *http.Request) {
 		"general":      general,
 		"models":       modelsStats,
 		"keys":         keyStats,
+		"daily_limits": dailyLimits(provider, keyStats),
 		"top_models":   topModels,
 		"free_models":  freeModels,
 		"usage_trend":  usageTrend,

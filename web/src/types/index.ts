@@ -34,6 +34,14 @@ export interface KeyUsageStats {
   last_used_at: string // ISO-время; пусто если never
 }
 
+export interface DailyLimitsInfo {
+  total: number
+  used: number
+  remaining: number
+  source: string
+  models: unknown[]
+}
+
 export interface ModelUsageTrend {
   day: string
   requests: number
@@ -92,6 +100,7 @@ export interface StatsSnapshot {
   general: GeneralStats
   models: ModelStats[]
   keys: KeyUsageStats[]
+  daily_limits: DailyLimitsInfo
   top_models: DBModel[]
   free_models: DBModel[]
   usage_trend: ModelUsageTrend[]

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/store"
 )
 
 func TestStore_GetGeneralStats_Empty(t *testing.T) {
@@ -151,6 +151,9 @@ func TestStore_BulkOperations(t *testing.T) {
 	if len(aiKeys) != 1 || aiKeys[0].Status == "disabled" {
 		t.Fatalf("openrouter bulk update touched aihubmix keys: %+v", aiKeys)
 	}
+	if aiKeys[0].MaxLimit != 10 {
+		t.Fatalf("aihubmix MaxLimit = %d, want 10", aiKeys[0].MaxLimit)
+	}
 
 	// Test bulk delete
 	err = s.DeleteKeys([]string{h1, h2, h3}, "openrouter")
@@ -238,6 +241,50 @@ func TestStore_RateLimitsAndRequestsLog(t *testing.T) {
 		t.Errorf("expected LimitTotal to be 1000, got %+v", entry.LimitTotal)
 	}
 	if !entry.RateLimitInterval.Valid || entry.RateLimitInterval.String != "1m" {
-		t.Errorf("expected RateLimitInterval to be '1m', got %+v", entry.RateLimitInterval)
+		t.Errorf("expected RateLimitInterval to be '1m', got %+v", entry)
+	}
+}
+
+// ponytail: regression test. date(last_used_at) возвращает NULL в modernc
+// (драйвер пишет time.Time как "2026-07-06 23:30:45 +0000 UTC", SQLite это не парсит).
+// substr(last_used_at, 1, 10) — рабочий workaround. Тест падает, если кто-то
+// вернёт date() обратно: вчерашний ключ должен показать usage_today=0.
+func TestStore_GetKeyUsageStats_ResetsExpiredDaily(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_stats_reset.db")
+
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.AddKeys([]string{"sk-or-v1-stale"}, "openrouter"); err != nil {
+		t.Fatalf("AddKeys failed: %v", err)
+	}
+
+	// Помечаем ключ как вчерашний с usage_today=10 и day_exhausted.
+	dbKeys, err := s.GetKeys("openrouter")
+	if err != nil {
+		t.Fatalf("GetKeys failed: %v", err)
+	}
+	k := dbKeys[0]
+	yesterday := time.Now().UTC().Add(-48 * time.Hour)
+	k.LastUsedAt = yesterday
+	k.UsageToday = 10
+	k.Status = "day_exhausted"
+	if err := s.UpdateKey(k); err != nil {
+		t.Fatalf("UpdateKey failed: %v", err)
+	}
+
+	stats, err := s.GetKeyUsageStats("openrouter")
+	if err != nil {
+		t.Fatalf("GetKeyUsageStats failed: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 stat row, got %d", len(stats))
+	}
+	if stats[0].TodayUsage != 0 {
+		t.Errorf("expected stale key to show usage_today=0, got %d (date()/substr regression)", stats[0].TodayUsage)
 	}
 }

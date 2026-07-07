@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"openrouter-gateway/internal/config"
-	"openrouter-gateway/internal/keys"
-	"openrouter-gateway/internal/models"
-	"openrouter-gateway/internal/proxies"
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/config"
+	"szx-gateway/internal/keys"
+	"szx-gateway/internal/models"
+	"szx-gateway/internal/proxies"
+	"szx-gateway/internal/store"
 )
 
 type ProxyHandler struct {

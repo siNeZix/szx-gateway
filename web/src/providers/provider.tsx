@@ -10,7 +10,7 @@ import type { Provider } from '../types'
 // Провайдер хранится в localStorage и в реактивном состоянии.
 // Ponytail: без Zustand — useState + Context достаточно, переключатель в шапке.
 
-const STORAGE_KEY = 'gateway.provider'
+const STORAGE_KEY = 'szx.provider'
 
 interface ProviderCtx {
   provider: Provider

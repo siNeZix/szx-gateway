@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/store"
 )
 
 type ShirManResponse struct {

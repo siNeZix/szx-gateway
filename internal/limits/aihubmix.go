@@ -6,6 +6,12 @@ type Limit struct {
 	TokensDay   int64
 }
 
+const (
+	// Источник: https://github.com/cheahjs/free-llm-api-resources, OpenRouter.
+	OpenRouterFreeRequestsDay int64 = 50
+	AIHubMixFreeRequestsDay   int64 = 10
+)
+
 // ponytail: умные per-model лимиты отключены — реальность 10 запросов/аккаунт/сутки
 // независимо от модели. Остаётся только RPM (sliding window).
 var aihubmixFree = map[string]Limit{

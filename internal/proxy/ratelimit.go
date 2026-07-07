@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"openrouter-gateway/internal/keys"
+	"szx-gateway/internal/keys"
 )
 
 // ParseRateLimits extracts remaining limit and rate limit headers to lazily update key state

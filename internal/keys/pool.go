@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"openrouter-gateway/internal/limits"
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/limits"
+	"szx-gateway/internal/store"
 )
 
 type KeyPool struct {
@@ -221,6 +221,27 @@ func (kp *KeyPool) GetBestKeyForModelExcluding(model string, exclude map[string]
 		}
 		tried[best] = true
 	}
+}
+
+// ResetExpiredDailyUsage сбрасывает UsageToday и статус day_exhausted у ключей,
+// чей LastUsedAt в прошлом UTC-дне. Возвращает количество сброшенных.
+// ponytail: global pool scan O(n), нормально при текущих объёмах пула.
+func (kp *KeyPool) ResetExpiredDailyUsage() int {
+	kp.mu.RLock()
+	keys := kp.keys
+	kp.mu.RUnlock()
+
+	reset := 0
+	for _, ks := range keys {
+		ks.mu.Lock()
+		changed := ks.ResetDailyUsageIfNewDay()
+		ks.mu.Unlock()
+		if changed {
+			kp.SyncKeyToDB(ks)
+			reset++
+		}
+	}
+	return reset
 }
 
 // GetAllKeys returns a snapshot of all keys in the pool.

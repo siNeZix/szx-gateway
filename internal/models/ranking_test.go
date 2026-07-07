@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"openrouter-gateway/internal/store"
+	"szx-gateway/internal/store"
 )
 
 func TestRankingManager_FetchFree(t *testing.T) {

@@ -1,6 +1,6 @@
-# OpenRouter Free LLM Gateway (agents.md)
+# SZX Gateway (agents.md)
 
-This file contains instructions, conventions, and operational patterns for any AI agents or developers working on the `openrouter-gateway` project.
+This file contains instructions, conventions, and operational patterns for any AI agents or developers working on the `szx-gateway` project.
 
 ## 🛠️ Stack & Architecture Overview
 - **Language:** Go (1.26.3)

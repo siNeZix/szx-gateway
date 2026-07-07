@@ -1,7 +1,7 @@
 services:
   gateway:
     build: .
-    container_name: openrouter-gateway
+    container_name: szx-gateway
     restart: unless-stopped
     ports:
       - "1005:8080"
