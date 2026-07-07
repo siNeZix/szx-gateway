@@ -62,30 +62,28 @@ export default function Dashboard() {
         />
       </div>
 
-      {daily.total > 0 && (
-        <div className="rounded-2xl border border-slate-800 bg-slate-800/40 p-4">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                Дневной лимит
-              </div>
-              <div className="mt-1 text-2xl font-semibold tabular-nums text-emerald-400">
-                {daily.remaining} осталось
-              </div>
+      <div className="rounded-2xl border border-slate-800 bg-slate-800/40 p-4">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+              Дневной лимит
             </div>
-            <div className="text-right text-xs text-slate-500">
-              <div className="tabular-nums">доступно: {daily.total}</div>
-              <div className="tabular-nums">использовано: {daily.used}</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums text-emerald-400">
+              {daily.remaining} осталось
             </div>
           </div>
-          <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-950/70">
-            <div
-              className="h-full rounded-full bg-emerald-400"
-              style={{ width: `${dailyPct}%` }}
-            />
+          <div className="text-right text-xs text-slate-500">
+            <div className="tabular-nums">доступно: {daily.total}</div>
+            <div className="tabular-nums">использовано: {daily.used}</div>
           </div>
         </div>
-      )}
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-950/70">
+          <div
+            className="h-full rounded-full bg-emerald-400"
+            style={{ width: `${dailyPct}%` }}
+          />
+        </div>
+      </div>
 
       <div>
         <h3 className="mb-2 text-sm font-medium text-slate-300">
