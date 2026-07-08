@@ -880,6 +880,12 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 		maxLimit = limits.AIHubMixFreeRequestsDay
 	}
 
+	existsStmt, err := tx.Prepare(`SELECT 1 FROM keys WHERE key_hash = ?`)
+	if err != nil {
+		return 0, err
+	}
+	defer existsStmt.Close()
+
 	stmt, err := tx.Prepare(`
 		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit)
 		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?)
@@ -896,12 +902,13 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	for _, k := range keys {
 		h := HashKey(k)
 		masked := MaskKey(k)
+		existed := existsStmt.QueryRow(h).Scan(new(int)) == nil
 		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider, maxLimit)
 		if err != nil {
 			return 0, err
 		}
 		rows, err := res.RowsAffected()
-		if err == nil && rows > 0 {
+		if err == nil && rows > 0 && !existed {
 			added++
 		}
 	}
@@ -966,7 +973,7 @@ func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error
 	return tx.Commit()
 }
 
-func (s *Store) UpdateKey(k *DBKey) error {
+func (s *Store) UpdateKey(k *DBKey, provider string) error {
 	_, err := s.db.Exec(`
 		UPDATE keys SET
 			status = ?,
@@ -979,10 +986,10 @@ func (s *Store) UpdateKey(k *DBKey) error {
 			cooldown_until = ?,
 			last_checked_at = ?,
 			last_used_at = ?
-		WHERE key_hash = ?
+		WHERE key_hash = ? AND provider = ?
 	`, k.Status, k.LimitRemaining, k.UsageToday, k.MaxLimit,
 		k.IsFreeTier, k.RateLimitReq, k.RateLimitInterval,
-		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.KeyHash)
+		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.KeyHash, provider)
 	return err
 }
 

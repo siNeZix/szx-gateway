@@ -256,7 +256,7 @@ func (kp *KeyPool) AllKeys() []*KeyState {
 
 func (kp *KeyPool) SyncKeyToDB(ks *KeyState) {
 	dbK := ks.ToDB()
-	if err := kp.store.UpdateKey(dbK); err != nil {
+	if err := kp.store.UpdateKey(dbK, kp.provider); err != nil {
 		log.Printf("Failed to sync key %s to database: %v", ks.MaskedKey, err)
 	}
 }

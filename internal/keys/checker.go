@@ -75,7 +75,16 @@ func (kc *KeyChecker) runLoop() {
 
 	// Delay between putting keys into work queue to strictly respect the global rate limit.
 	// E.g., 200 checks/min -> 60s / 200 = 300ms delay.
+	if kc.rateLimit <= 0 {
+		kc.rateLimit = 200
+	}
+	if kc.concurrency <= 0 {
+		kc.concurrency = 1
+	}
 	delay := kc.interval / time.Duration(kc.rateLimit)
+	if delay <= 0 {
+		delay = time.Second
+	}
 	ticker := time.NewTicker(delay)
 	defer ticker.Stop()
 

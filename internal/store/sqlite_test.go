@@ -75,9 +75,12 @@ func TestStore_AddAndDeleteKeys(t *testing.T) {
 	}
 
 	// 3. Test duplicate addition (ON CONFLICT DO UPDATE should run successfully)
-	_, err = s.AddKeys([]string{"sk-or-v1-abc123xyz"}, "openrouter")
+	added, err = s.AddKeys([]string{"sk-or-v1-abc123xyz"}, "openrouter")
 	if err != nil {
 		t.Fatalf("failed to add duplicate key: %v", err)
+	}
+	if added != 0 {
+		t.Fatalf("expected duplicate add count 0, got %d", added)
 	}
 
 	// 4. Delete a key
@@ -273,7 +276,7 @@ func TestStore_GetKeyUsageStats_ResetsExpiredDaily(t *testing.T) {
 	k.LastUsedAt = yesterday
 	k.UsageToday = 10
 	k.Status = "day_exhausted"
-	if err := s.UpdateKey(k); err != nil {
+	if err := s.UpdateKey(k, "openrouter"); err != nil {
 		t.Fatalf("UpdateKey failed: %v", err)
 	}
 

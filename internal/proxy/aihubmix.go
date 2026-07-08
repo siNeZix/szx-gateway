@@ -49,7 +49,6 @@ var (
 	aihubmixKeyModelMarkers = []string{
 		"not authorized to access the requested model", "not authorized to access",
 	}
-	aihubmixReasoningParams = []string{"reasoning_effort", "reasoningEffort", "reasoning"}
 )
 
 type aihubmixErrorAction int
@@ -99,12 +98,12 @@ func (h *AihubmixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		http.Error(w, `{"error":{"message":"Missing or invalid Authorization header"}}`, http.StatusUnauthorized)
+		writeProxyError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
 		return
 	}
 	clientToken := strings.TrimPrefix(authHeader, "Bearer ")
 	if clientToken != h.cfg.GatewayToken {
-		http.Error(w, `{"error":{"message":"Unauthorized: invalid gateway token"}}`, http.StatusUnauthorized)
+		writeProxyError(w, http.StatusUnauthorized, "Unauthorized: invalid gateway token")
 		return
 	}
 
@@ -145,7 +144,7 @@ func (h *AihubmixHandler) handleModels(w http.ResponseWriter, r *http.Request) {
 func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, `{"error":{"message":"Failed to read request body"}}`, http.StatusBadRequest)
+		writeProxyError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
 	r.Body.Close()
@@ -158,19 +157,15 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(bodyBytes, &peek); err != nil {
-			http.Error(w, `{"error":{"message":"Invalid JSON body"}}`, http.StatusBadRequest)
+			writeProxyError(w, http.StatusBadRequest, "Invalid JSON body")
 			return
 		}
 		if peek.Model == "" || !h.rankingMgr.IsAihubmixFreeModel(peek.Model) {
-			http.Error(w, fmt.Sprintf(`{"error":{"message":"Model %s is not supported (only AIHubMix free models allowed)"}}`, peek.Model), http.StatusBadRequest)
+			writeProxyError(w, http.StatusBadRequest, fmt.Sprintf("Model %s is not supported (only AIHubMix free models allowed)", peek.Model))
 			return
 		}
 		modelForLimits = peek.Model
 	}
-
-	// reasoning-fix: на /chat/completions при наличии tools вырезаем reasoning-параметры,
-	// иначе gpt-5.5 кидает "Function tools with reasoning_effort are not supported".
-	bodyBytes = sanitizeReasoning(bodyBytes, r.URL.Path, r.Header.Get("Content-Type"))
 
 	hopHeaders := map[string]bool{
 		"host": true, "connection": true, "keep-alive": true,
@@ -206,7 +201,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			keyState, err = h.pool.GetBestKeyExcluding(triedKeys)
 		}
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":{"message":"%v"}}`, err), http.StatusServiceUnavailable)
+			writeProxyError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
 		triedKeys[keyState.KeyHash] = true
@@ -221,7 +216,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 
 		req, err := http.NewRequest(r.Method, targetURL, bytes.NewReader(bodyBytes))
 		if err != nil {
-			http.Error(w, `{"error":{"message":"Internal gateway error creating request"}}`, http.StatusInternalServerError)
+			writeProxyError(w, http.StatusInternalServerError, "Internal gateway error creating request")
 			return
 		}
 		req.Header = upstreamHeaders
@@ -241,7 +236,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			keyState.RollbackUsage()
 			h.pool.SyncKeyToDB(keyState)
 			finalErr = err
-			break
+			continue
 		}
 
 		// Читаем первый чанк — нужен для детекта free-квоты (HTTP 200-заглушка)
@@ -352,7 +347,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 	}
 
 	log.Printf("[AIHubMix] all %d retries failed: %v", maxAttempts, finalErr)
-	http.Error(w, fmt.Sprintf(`{"error":{"message":"AIHubMix gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
+	writeProxyError(w, http.StatusBadGateway, fmt.Sprintf("AIHubMix gateway exhausted all retries. Last error: %v", finalErr))
 }
 
 func (h *AihubmixHandler) nextAIHubMix429Cooldown(ks *keys.KeyState) time.Duration {
@@ -500,47 +495,6 @@ func usageTokens(data []byte) int64 {
 		return 0
 	}
 	return v.Usage.PromptTokens + v.Usage.CompletionTokens
-}
-
-func sanitizeReasoning(body []byte, path, contentType string) []byte {
-	if !strings.Contains(strings.ToLower(contentType), "json") {
-		return body
-	}
-	if !strings.Contains(path, "/chat/completions") {
-		return body
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return body
-	}
-	if data["tools"] == nil && data["functions"] == nil {
-		return body
-	}
-	removed := false
-	for _, k := range aihubmixReasoningParams {
-		if _, ok := data[k]; ok {
-			delete(data, k)
-			removed = true
-		}
-	}
-	if !removed {
-		return body
-	}
-	out, err := json.Marshal(data)
-	if err != nil {
-		return body
-	}
-	return out
-}
-
-func containsAny(data []byte, markers []string) bool {
-	s := string(data)
-	for _, m := range markers {
-		if strings.Contains(s, m) {
-			return true
-		}
-	}
-	return false
 }
 
 func containsAnyLower(data []byte, markers []string) bool {

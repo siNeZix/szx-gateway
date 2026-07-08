@@ -59,12 +59,12 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Verify Gateway Client Token
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		http.Error(w, `{"error":{"message":"Missing or invalid Authorization header"}}`, http.StatusUnauthorized)
+		writeProxyError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
 		return
 	}
 	clientToken := strings.TrimPrefix(authHeader, "Bearer ")
 	if clientToken != ph.cfg.GatewayToken {
-		http.Error(w, `{"error":{"message":"Unauthorized: invalid gateway token"}}`, http.StatusUnauthorized)
+		writeProxyError(w, http.StatusUnauthorized, "Unauthorized: invalid gateway token")
 		return
 	}
 
@@ -79,7 +79,7 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, `{"error":{"message":"Not Found"}}`, http.StatusNotFound)
+	writeProxyError(w, http.StatusNotFound, "Not Found")
 }
 
 func (ph *ProxyHandler) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -167,14 +167,14 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	// Read request body
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, `{"error":{"message":"Failed to read request body"}}`, http.StatusBadRequest)
+		writeProxyError(w, http.StatusBadRequest, "Failed to read request body")
 		return
 	}
 
 	// Decode partially to inspect model and stream
 	var chatReq ChatCompletionsRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
-		http.Error(w, `{"error":{"message":"Failed to parse JSON request"}}`, http.StatusBadRequest)
+		writeProxyError(w, http.StatusBadRequest, "Failed to parse JSON request")
 		return
 	}
 
@@ -188,7 +188,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	// Verify model is free
 	if !ph.rankingMgr.IsFreeModel(resolvedModel) {
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"Model %s is not supported (only Shir-Man free models allowed)"}}`, originalModel), http.StatusBadRequest)
+		writeProxyError(w, http.StatusBadRequest, fmt.Sprintf("Model %s is not supported (only Shir-Man free models allowed)", originalModel))
 		return
 	}
 
@@ -207,12 +207,14 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 	var finalErr error
 	settings, _ := ph.store.GetProxySettings("openrouter")
 	proxyAfter429 := false
+	triedKeys := make(map[string]bool)
 	for attempt := 1; attempt <= ph.cfg.MaxKeyRetries; attempt++ {
-		keyState, err := ph.pool.GetBestKey()
+		keyState, err := ph.pool.GetBestKeyExcluding(triedKeys)
 		if err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":{"message":"%v"}}`, err), http.StatusServiceUnavailable)
+			writeProxyError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
+		triedKeys[keyState.KeyHash] = true
 
 		// GetBestKey already reserved (registered) this key atomically.
 		ph.pool.SyncKeyToDB(keyState)
@@ -223,7 +225,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		req, err := http.NewRequest("POST", "https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(bodyBytes))
 		if err != nil {
 			log.Printf("Failed to create OpenRouter request: %v", err)
-			http.Error(w, `{"error":{"message":"Internal gateway error creating request"}}`, http.StatusInternalServerError)
+			writeProxyError(w, http.StatusInternalServerError, "Internal gateway error creating request")
 			return
 		}
 
@@ -338,7 +340,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 	// If we exhausted all retries
 	log.Printf("All %d retries failed for request. Last error: %v", ph.cfg.MaxKeyRetries, finalErr)
-	http.Error(w, fmt.Sprintf(`{"error":{"message":"Gateway exhausted all retries. Last error: %v"}}`, finalErr), http.StatusBadGateway)
+	writeProxyError(w, http.StatusBadGateway, fmt.Sprintf("Gateway exhausted all retries. Last error: %v", finalErr))
 }
 
 func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.Response, ks *keys.KeyState, model string, startTime time.Time, proxyID, requestBytes int64) {
@@ -347,7 +349,7 @@ func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.R
 	if err != nil {
 		ph.logProxy(proxyID, requestBytes, 0, resp.StatusCode, false, err.Error(), startTime)
 		log.Printf("Failed to read response body: %v", err)
-		http.Error(w, `{"error":{"message":"Failed to read response from upstream"}}`, http.StatusBadGateway)
+		writeProxyError(w, http.StatusBadGateway, "Failed to read response from upstream")
 		return
 	}
 
@@ -399,7 +401,7 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Printf("ResponseWriter does not support Flusher")
-		http.Error(w, `{"error":{"message":"Streaming not supported by gateway"}}`, http.StatusInternalServerError)
+		writeProxyError(w, http.StatusInternalServerError, "Streaming not supported by gateway")
 		return
 	}
 
