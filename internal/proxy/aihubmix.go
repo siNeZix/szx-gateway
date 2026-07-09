@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"szx-gateway/internal/config"
+	"szx-gateway/internal/firewall"
 	"szx-gateway/internal/keys"
 	"szx-gateway/internal/models"
 	"szx-gateway/internal/proxies"
@@ -165,6 +166,20 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		modelForLimits = peek.Model
+	}
+
+	// Firewall: скан запроса на секреты
+	if h.cfg.FirewallEnabled {
+		v := firewall.InspectRequest(bodyBytes, h.cfg.FirewallBlock, h.cfg.FirewallRedact)
+		if v.Action == firewall.Block {
+			log.Printf("[firewall] aihubmix request blocked: %s (types: %v)", strings.Join(v.Reasons, "; "), v.SecretTypes)
+			writeProxyError(w, http.StatusForbidden, "Request blocked by firewall: "+strings.Join(v.Reasons, "; "))
+			return
+		}
+		if v.Action == firewall.Redact {
+			log.Printf("[firewall] aihubmix request redacted: %s (types: %v)", strings.Join(v.Reasons, "; "), v.SecretTypes)
+			bodyBytes = v.Body
+		}
 	}
 
 	hopHeaders := map[string]bool{
@@ -380,6 +395,15 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	flusher, _ := w.(http.Flusher)
 	tokens := usageTokens(firstBytes)
 	responseBytes := int64(len(firstBytes))
+
+	// Firewall: скан ответа
+	var streamScanner *firewall.StreamScanner
+	if h.cfg.FirewallEnabled {
+		streamScanner = firewall.NewStreamScanner(h.cfg.FirewallRedact)
+		if len(firstBytes) > 0 {
+			firstBytes = streamScanner.ScanLine(firstBytes)
+		}
+	}
 	if len(firstBytes) > 0 {
 		w.Write(firstBytes)
 		if flusher != nil {
@@ -389,6 +413,9 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			if streamScanner != nil {
+				line = streamScanner.ScanLine(line)
+			}
 			responseBytes += int64(len(line))
 			if n := usageTokens(line); n > 0 {
 				tokens = n
@@ -400,6 +427,20 @@ func (h *AihubmixHandler) relayResponse(w http.ResponseWriter, resp *http.Respon
 		}
 		if err != nil {
 			break
+		}
+	}
+
+	// Firewall: summary лог
+	if streamScanner != nil {
+		inj, cmd, redacted, types := streamScanner.Summary()
+		if inj {
+			log.Printf("[firewall] aihubmix stream: prompt injection detected")
+		}
+		if cmd {
+			log.Printf("[firewall] aihubmix stream: dangerous command detected")
+		}
+		if redacted {
+			log.Printf("[firewall] aihubmix stream: secrets redacted (types: %v)", types)
 		}
 	}
 

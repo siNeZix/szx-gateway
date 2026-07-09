@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"szx-gateway/internal/config"
+	"szx-gateway/internal/firewall"
 	"szx-gateway/internal/keys"
 	"szx-gateway/internal/models"
 	"szx-gateway/internal/proxies"
@@ -203,6 +204,20 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		}
 	}
 
+	// Firewall: скан запроса на секреты
+	if ph.cfg.FirewallEnabled {
+		v := firewall.InspectRequest(bodyBytes, ph.cfg.FirewallBlock, ph.cfg.FirewallRedact)
+		if v.Action == firewall.Block {
+			log.Printf("[firewall] request blocked: %s (types: %v)", strings.Join(v.Reasons, "; "), v.SecretTypes)
+			writeProxyError(w, http.StatusForbidden, "Request blocked by firewall: "+strings.Join(v.Reasons, "; "))
+			return
+		}
+		if v.Action == firewall.Redact {
+			log.Printf("[firewall] request redacted: %s (types: %v)", strings.Join(v.Reasons, "; "), v.SecretTypes)
+			bodyBytes = v.Body
+		}
+	}
+
 	// Execute request with retries over different keys
 	var finalErr error
 	settings, _ := ph.store.GetProxySettings("openrouter")
@@ -353,6 +368,20 @@ func (ph *ProxyHandler) handleNormalResponse(w http.ResponseWriter, resp *http.R
 		return
 	}
 
+	// Firewall: скан ответа на injection, опасные команды, секреты
+	if ph.cfg.FirewallEnabled {
+		v := firewall.InspectResponse(respBody, ph.cfg.FirewallBlock, ph.cfg.FirewallRedact)
+		if v.Action == firewall.Block {
+			log.Printf("[firewall] response blocked: %s", strings.Join(v.Reasons, "; "))
+			writeProxyError(w, http.StatusForbidden, "Response blocked by firewall: "+strings.Join(v.Reasons, "; "))
+			return
+		}
+		if v.Action == firewall.Redact {
+			log.Printf("[firewall] response redacted: %s (types: %v)", strings.Join(v.Reasons, "; "), v.SecretTypes)
+			respBody = v.Body
+		}
+	}
+
 	// Copy Headers
 	for k, v := range resp.Header {
 		if k != "Content-Length" && k != "Content-Encoding" {
@@ -418,10 +447,18 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 	var ttftMs int64
 	var responseBytes int64
 	hasLoggedTTFT := false
+	var streamScanner *firewall.StreamScanner
+	if ph.cfg.FirewallEnabled {
+		streamScanner = firewall.NewStreamScanner(ph.cfg.FirewallRedact)
+	}
 
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			// Firewall: скан стрима (редакт инлайн, injection/команды log-only)
+			if streamScanner != nil {
+				line = streamScanner.ScanLine(line)
+			}
 			responseBytes += int64(len(line))
 			// Write chunk to client
 			_, writeErr := w.Write(line)
@@ -466,6 +503,20 @@ func (ph *ProxyHandler) handleStreamResponse(w http.ResponseWriter, resp *http.R
 				log.Printf("Error reading stream from upstream: %v", err)
 			}
 			break
+		}
+	}
+
+	// Firewall: summary лог после стрима
+	if streamScanner != nil {
+		inj, cmd, redacted, types := streamScanner.Summary()
+		if inj {
+			log.Printf("[firewall] stream: prompt injection detected")
+		}
+		if cmd {
+			log.Printf("[firewall] stream: dangerous command detected")
+		}
+		if redacted {
+			log.Printf("[firewall] stream: secrets redacted (types: %v)", types)
 		}
 	}
 

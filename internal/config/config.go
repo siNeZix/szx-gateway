@@ -19,6 +19,9 @@ type Config struct {
 	MaxKeyRetries        int
 	WebUsername          string
 	WebPassword          string
+	FirewallEnabled      bool
+	FirewallBlock        bool
+	FirewallRedact       bool
 }
 
 func Load() *Config {
@@ -40,6 +43,10 @@ func Load() *Config {
 
 	flag.StringVar(&cfg.WebUsername, "web-user", getEnv("WEB_USERNAME", "admin"), "Username for Web UI auth")
 	flag.StringVar(&cfg.WebPassword, "web-pass", getEnv("WEB_PASSWORD", "admin"), "Password for Web UI auth")
+
+	flag.BoolVar(&cfg.FirewallEnabled, "firewall", getEnvBool("FIREWALL_ENABLED", false), "Enable firewall (scan requests/responses for secrets, injection, dangerous commands)")
+	flag.BoolVar(&cfg.FirewallBlock, "firewall-block", getEnvBool("FIREWALL_BLOCK", true), "Block malicious content (false = log only)")
+	flag.BoolVar(&cfg.FirewallRedact, "firewall-redact", getEnvBool("FIREWALL_REDACT", true), "Redact secrets in response instead of blocking")
 
 	flag.Parse()
 
@@ -65,6 +72,13 @@ func Load() *Config {
 func getEnv(key, fallback string) string {
 	if val, ok := os.LookupEnv(key); ok {
 		return val
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if val, ok := os.LookupEnv(key); ok {
+		return val == "true" || val == "1"
 	}
 	return fallback
 }
