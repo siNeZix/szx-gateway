@@ -19,10 +19,10 @@ import (
 )
 
 func main() {
-	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix)...")
+	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix + Google)...")
 
 	cfg := config.Load()
-	log.Printf("OpenRouter on %s, AIHubMix on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr)
+	log.Printf("OpenRouter on %s, AIHubMix on %s, Google on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr, cfg.GoogleListenAddr)
 
 	dbStore, err := store.New(cfg.DbPath)
 	if err != nil {
@@ -42,6 +42,12 @@ func main() {
 		log.Fatalf("AIHubMix key pool init failed: %v", err)
 	}
 	log.Println("AIHubMix key pool loaded.")
+
+	googlePool, err := keys.NewKeyPool(dbStore, "google")
+	if err != nil {
+		log.Fatalf("Google key pool init failed: %v", err)
+	}
+	log.Println("Google key pool loaded.")
 
 	rankingMgr := models.NewRankingManager(dbStore, cfg.RankingRefresh)
 	rankingMgr.Start()
@@ -76,6 +82,20 @@ func main() {
 	aihubmixChecker.Start()
 	log.Println("Background key checker started (AIHubMix).")
 
+	googleChecker := keys.NewKeyChecker(
+		googlePool,
+		cfg.KeyCheckTTL,
+		cfg.KeyCheckRate,
+		cfg.KeyCheckRateInterval,
+		cfg.KeyCheckConcurrency,
+		"https://generativelanguage.googleapis.com/v1beta/models",
+		"google",
+		proxyPool,
+		dbStore,
+	)
+	googleChecker.Start()
+	log.Println("Background key checker started (Google).")
+
 	// ponytail: фоновый сброс дневных счётчиков раз в минуту. Решает баг
 	// "использовано за сегодня не сбросилось после UTC+0" — без этого сброс
 	// происходит только лениво, при первом запросе через ключ.
@@ -94,6 +114,9 @@ func main() {
 				if n := aihubmixPool.ResetExpiredDailyUsage(); n > 0 {
 					log.Printf("Daily reset: %d aihubmix keys cleared", n)
 				}
+				if n := googlePool.ResetExpiredDailyUsage(); n > 0 {
+					log.Printf("Daily reset: %d google keys cleared", n)
+				}
 			}
 		}
 	}()
@@ -101,10 +124,12 @@ func main() {
 
 	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr, proxyPool)
 	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr, proxyPool)
+	googleProxy := proxy.NewGoogleHandler(cfg, dbStore, googlePool, rankingMgr, proxyPool)
 
 	pools := map[string]*keys.KeyPool{
 		"openrouter": openRouterPool,
 		"aihubmix":   aihubmixPool,
+		"google":     googlePool,
 	}
 	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, pools, proxyPool)
 
@@ -118,8 +143,14 @@ func main() {
 	webServer.Start(amMux)
 	amMux.Handle("/v1/", aihubmixProxy)
 
+	// Google mux: /v1/* → Google proxy, / → same admin
+	gMux := http.NewServeMux()
+	webServer.Start(gMux)
+	gMux.Handle("/v1/", googleProxy)
+
 	orServer := &http.Server{Addr: cfg.ListenAddr, Handler: orMux}
 	amServer := &http.Server{Addr: cfg.AIHubMixListenAddr, Handler: amMux}
+	gServer := &http.Server{Addr: cfg.GoogleListenAddr, Handler: gMux}
 
 	go func() {
 		log.Printf("OpenRouter server on %s", cfg.ListenAddr)
@@ -133,6 +164,12 @@ func main() {
 			log.Fatalf("AIHubMix server failure: %v", err)
 		}
 	}()
+	go func() {
+		log.Printf("Google server on %s", cfg.GoogleListenAddr)
+		if err := gServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Google server failure: %v", err)
+		}
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -142,6 +179,7 @@ func main() {
 	dailyResetCancel()
 	keyChecker.Stop()
 	aihubmixChecker.Stop()
+	googleChecker.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -150,6 +188,9 @@ func main() {
 	}
 	if err := amServer.Shutdown(ctx); err != nil {
 		log.Printf("AIHubMix shutdown error: %v", err)
+	}
+	if err := gServer.Shutdown(ctx); err != nil {
+		log.Printf("Google shutdown error: %v", err)
 	}
 
 	log.Println("SZX Gateway stopped.")

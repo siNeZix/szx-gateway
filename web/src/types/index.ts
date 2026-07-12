@@ -1,7 +1,7 @@
 // Контракты API. Ручная синхронизация с Go-структурами в internal/store/sqlite.go
 // и internal/web/api.go. Единый конверт { data, error } разворачивается в apiClient.
 
-export type Provider = 'openrouter' | 'aihubmix'
+export type Provider = 'openrouter' | 'aihubmix' | 'google'
 
 export interface GeneralStats {
   total_requests: number

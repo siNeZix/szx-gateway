@@ -22,7 +22,8 @@ const Ctx = createContext<ProviderCtx | null>(null)
 export function ProviderProvider({ children }: { children: ReactNode }) {
   const [provider, setProvider] = useState<Provider>(() => {
     const p = localStorage.getItem(STORAGE_KEY)
-    return p === 'aihubmix' ? 'aihubmix' : 'openrouter'
+    if (p === 'aihubmix' || p === 'google') return p
+    return 'openrouter'
   })
 
   const value = useMemo(

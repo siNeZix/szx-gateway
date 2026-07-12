@@ -32,8 +32,7 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 // Вторым возвратом идёт bool: false если провайдер неизвестен (caller решает, 400 или дефолт).
 func providerFromRequest(r *http.Request) (string, bool) {
 	p := strings.TrimSpace(r.URL.Query().Get("provider"))
-	if p == "" || (p != "openrouter" && p != "aihubmix") {
-		// ponytail: молча падаем в дефолт. Если frontend явно ошибся — он получит openrouter.
+	if p == "" || (p != "openrouter" && p != "aihubmix" && p != "google") {
 		return "openrouter", true
 	}
 	return p, true
@@ -42,7 +41,7 @@ func providerFromRequest(r *http.Request) (string, bool) {
 // requireProviderForm достаёт provider из JSON-body или form. Для POST /api/keys и bulk.
 func requireProviderForm(r *http.Request) (string, bool) {
 	p := strings.TrimSpace(r.FormValue("provider"))
-	if p != "openrouter" && p != "aihubmix" {
+	if p != "openrouter" && p != "aihubmix" && p != "google" {
 		return "", false
 	}
 	return p, true
@@ -100,6 +99,8 @@ func dailyLimits(provider string, keys []store.KeyUsageStats) dailyLimitsInfo {
 		limit := k.Limit
 		if provider == "openrouter" {
 			limit = limits.OpenRouterFreeRequestsDay
+		} else if provider == "google" {
+			limit = limits.GoogleFreeRequestsDay
 		}
 		if limit <= 0 {
 			continue
@@ -128,6 +129,7 @@ func (ws *WebServer) apiProviders(w http.ResponseWriter, r *http.Request) {
 	}{
 		{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1"},
 		{"aihubmix", "AIHubMix", "https://aihubmix.com/v1"},
+		{"google", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta"},
 	}
 
 	out := make([]providerInfo, 0, len(defs))
@@ -260,7 +262,7 @@ func (ws *WebServer) apiKeysAdd(w http.ResponseWriter, r *http.Request) {
 		rawKeys = splitKeyLines(r.FormValue("keys"))
 	}
 
-	if provider != "openrouter" && provider != "aihubmix" {
+	if provider != "openrouter" && provider != "aihubmix" && provider != "google" {
 		writeAPIError(w, http.StatusBadRequest, "unknown provider")
 		return
 	}
@@ -328,7 +330,7 @@ func (ws *WebServer) apiKeysBulk(w http.ResponseWriter, r *http.Request) {
 		hashes = rawHashes
 	}
 
-	if provider != "openrouter" && provider != "aihubmix" {
+	if provider != "openrouter" && provider != "aihubmix" && provider != "google" {
 		writeAPIError(w, http.StatusBadRequest, "unknown provider")
 		return
 	}
@@ -457,7 +459,7 @@ func (ws *WebServer) apiProxySettings(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if ps.Provider != "openrouter" && ps.Provider != "aihubmix" {
+		if ps.Provider != "openrouter" && ps.Provider != "aihubmix" && ps.Provider != "google" {
 			writeAPIError(w, http.StatusBadRequest, "unknown provider")
 			return
 		}
@@ -474,7 +476,7 @@ func (ws *WebServer) apiProxySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []store.ProxySettings{}
-	for _, provider := range []string{"openrouter", "aihubmix"} {
+	for _, provider := range []string{"openrouter", "aihubmix", "google"} {
 		ps, err := ws.store.GetProxySettings(provider)
 		if err != nil {
 			log.Printf("apiProxySettings get: %v", err)
@@ -576,8 +578,10 @@ func (ws *WebServer) apiStats(w http.ResponseWriter, r *http.Request) {
 	if provider == "openrouter" {
 		topModels = ws.rankingMgr.GetTopModels()
 		freeModels = ws.rankingMgr.GetFreeModels()
-	} else {
+	} else if provider == "aihubmix" {
 		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
+	} else {
+		freeModels = ws.rankingMgr.GetGoogleFreeModels()
 	}
 	if topModels == nil {
 		topModels = []store.DBModel{}
@@ -735,8 +739,10 @@ func (ws *WebServer) apiModels(w http.ResponseWriter, r *http.Request) {
 	if provider == "openrouter" {
 		topModels = ws.rankingMgr.GetTopModels()
 		freeModels = ws.rankingMgr.GetFreeModels()
-	} else {
+	} else if provider == "aihubmix" {
 		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
+	} else {
+		freeModels = ws.rankingMgr.GetGoogleFreeModels()
 	}
 
 	// topModels может быть nil для aihubmix — нормализуем в пустой слайс для стабильного JSON.

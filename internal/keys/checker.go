@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"szx-gateway/internal/limits"
 	"szx-gateway/internal/proxies"
 	"szx-gateway/internal/store"
 )
@@ -176,7 +177,13 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	masked := ks.MaskedKey
 	ks.mu.Unlock()
 
-	req.Header.Set("Authorization", "Bearer "+rawKey)
+	if kc.providerType == "google" {
+		q := req.URL.Query()
+		q.Set("key", rawKey)
+		req.URL.RawQuery = q.Encode()
+	} else {
+		req.Header.Set("Authorization", "Bearer "+rawKey)
+	}
 	req.Header.Set("User-Agent", "OpenRouterGateway/1.0")
 
 	now := time.Now()
@@ -217,7 +224,7 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// OpenRouter: обновляем лимиты/usage/rate-limit из тела. AIHubMix: просто active.
+		// OpenRouter: обновляем лимиты/usage/rate-limit из тела. AIHubMix/Google: просто active.
 		if kc.providerType == "openrouter" {
 			var limitTotalVal, limitRemainingVal, usageVal, rateLimitReqVal sql.NullInt64
 			var rateLimitIntervalVal sql.NullString
@@ -273,6 +280,12 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 			})
 		} else {
 			ks.Status = "active"
+			if kc.providerType == "google" {
+				if ks.MaxLimit == 0 {
+					ks.MaxLimit = limits.GoogleFreeRequestsDay
+				}
+				ks.IsFreeTier = true
+			}
 		}
 
 	case http.StatusUnauthorized, http.StatusForbidden:

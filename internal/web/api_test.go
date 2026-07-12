@@ -112,12 +112,12 @@ func TestAPI_Contract(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &providers); err != nil {
 		t.Fatalf("unmarshal providers: %v", err)
 	}
-	if len(providers) != 2 {
-		t.Fatalf("expected 2 providers, got %d", len(providers))
+	if len(providers) != 3 {
+		t.Fatalf("expected 3 providers, got %d", len(providers))
 	}
 	for _, p := range providers {
 		id, _ := p["id"].(string)
-		if id != "openrouter" && id != "aihubmix" {
+		if id != "openrouter" && id != "aihubmix" && id != "google" {
 			t.Errorf("unexpected provider id: %v", p["id"])
 		}
 	}

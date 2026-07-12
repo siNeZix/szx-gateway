@@ -6,6 +6,7 @@ services:
     ports:
       - "1005:8080"
       - "1006:8081"
+      - "1007:8082"
     env_file:
       - .env
     volumes:

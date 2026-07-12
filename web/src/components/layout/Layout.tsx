@@ -12,7 +12,7 @@ const navItems = [
 
 function ProviderSwitcher() {
   const { provider, setProvider } = useProvider()
-  const options: Provider[] = ['openrouter', 'aihubmix']
+  const options: Provider[] = ['openrouter', 'aihubmix', 'google']
 
   return (
     <div className="flex items-center gap-2">

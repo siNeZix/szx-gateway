@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"szx-gateway/internal/limits"
 	"szx-gateway/internal/store"
 )
 
@@ -66,6 +67,17 @@ type AihubmixModelDetails struct {
 	} `json:"pricing"`
 }
 
+type GoogleModelsResponse struct {
+	Models []struct {
+		Name             string   `json:"name"`
+		DisplayName      string   `json:"displayName"`
+		Description      string   `json:"description"`
+		InputTokenLimit  int64    `json:"inputTokenLimit"`
+		OutputTokenLimit int64    `json:"outputTokenLimit"`
+		SupportedMethods []string `json:"supportedGenerationMethods"`
+	} `json:"models"`
+}
+
 type RankingManager struct {
 	store      *store.Store
 	refreshInt time.Duration
@@ -74,11 +86,13 @@ type RankingManager struct {
 	openRouterURL string
 	aihubmixURL   string
 	aihubmixInfo  string
+	googleURL     string
 
 	mu           sync.RWMutex
 	models       []store.DBModel
 	freeModels   []store.DBModel
 	aihubmixFree []store.DBModel
+	googleFree   []store.DBModel
 	fallbackID   string
 }
 
@@ -90,6 +104,7 @@ func NewRankingManager(s *store.Store, refreshInterval time.Duration) *RankingMa
 		openRouterURL: "https://openrouter.ai/api/v1/models",
 		aihubmixURL:   "https://aihubmix.com/v1/models",
 		aihubmixInfo:  "https://aihubmix.com/api/v1/models?type=llm",
+		googleURL:     "https://generativelanguage.googleapis.com/v1beta/models",
 		fallbackID:    "openrouter/free",
 	}
 }
@@ -114,6 +129,12 @@ func (rm *RankingManager) Start() {
 		rm.mu.Unlock()
 		log.Printf("Loaded %d AIHubMix free models from database cache", len(cachedAm))
 	}
+	if cachedGoogle, err := rm.store.GetCachedGoogleFreeModels(); err == nil && len(cachedGoogle) > 0 {
+		rm.mu.Lock()
+		rm.googleFree = cachedGoogle
+		rm.mu.Unlock()
+		log.Printf("Loaded %d Google free models from database cache", len(cachedGoogle))
+	}
 
 	// Initial fetch
 	if err := rm.fetch(); err != nil {
@@ -124,6 +145,9 @@ func (rm *RankingManager) Start() {
 	}
 	if err := rm.fetchAihubmixFree(); err != nil {
 		log.Printf("Initial AIHubMix free models fetch failed: %v", err)
+	}
+	if err := rm.fetchGoogleFree(); err != nil {
+		log.Printf("Initial Google free models fetch failed: %v", err)
 	}
 
 	// Periodical background fetch
@@ -139,6 +163,9 @@ func (rm *RankingManager) Start() {
 			}
 			if err := rm.fetchAihubmixFree(); err != nil {
 				log.Printf("AIHubMix free models fetch failed: %v", err)
+			}
+			if err := rm.fetchGoogleFree(); err != nil {
+				log.Printf("Google free models fetch failed: %v", err)
 			}
 		}
 	}()
@@ -340,6 +367,74 @@ func (rm *RankingManager) fetchAihubmixModelDetails(client *http.Client) (map[st
 	return res, nil
 }
 
+// fetchGoogleFree pulls the Gemini API models list (public, no key needed for list).
+// Фильтрует по supportedGenerationMethods (generateContent) и по whitelist free-моделей.
+// ponytail: Google не отдаёт pricing через API; free-tier определяется по whitelist в limits.
+func (rm *RankingManager) fetchGoogleFree() error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(rm.googleURL)
+	if err != nil {
+		return fmt.Errorf("failed to make HTTP request to Google API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad HTTP status from Google API: %s", resp.Status)
+	}
+
+	var data GoogleModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return fmt.Errorf("failed to decode Google models: %w", err)
+	}
+
+	knownFree := limits.GoogleKnownFree()
+	var dbModels []store.DBModel
+	now := time.Now()
+	for _, m := range data.Models {
+		id := strings.TrimPrefix(m.Name, "models/")
+		if _, ok := knownFree[id]; !ok {
+			continue
+		}
+		hasGenerate := false
+		for _, method := range m.SupportedMethods {
+			if method == "generateContent" {
+				hasGenerate = true
+				break
+			}
+		}
+		if !hasGenerate {
+			continue
+		}
+		dbModels = append(dbModels, store.DBModel{
+			ID:            id,
+			Name:          m.DisplayName,
+			ContextLength: m.InputTokenLimit,
+			MaxOutput:     m.OutputTokenLimit,
+			Type:          "llm",
+			Modalities:    "text->text",
+			InputPrice:    0,
+			OutputPrice:   0,
+			Description:   m.Description,
+			UpdatedAt:     now,
+		})
+	}
+
+	if len(dbModels) == 0 {
+		return fmt.Errorf("Google API returned 0 free models")
+	}
+
+	rm.mu.Lock()
+	rm.googleFree = dbModels
+	rm.mu.Unlock()
+
+	if err := rm.store.CacheGoogleFreeModels(dbModels); err != nil {
+		log.Printf("Failed to cache Google free models in DB: %v", err)
+	}
+
+	log.Printf("Updated Google free models cache. Total free models: %d", len(dbModels))
+	return nil
+}
+
 func (rm *RankingManager) ResolveAlias(alias string) (string, bool) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -420,5 +515,26 @@ func (rm *RankingManager) GetAihubmixFreeModels() []store.DBModel {
 
 	res := make([]store.DBModel, len(rm.aihubmixFree))
 	copy(res, rm.aihubmixFree)
+	return res
+}
+
+func (rm *RankingManager) IsGoogleFreeModel(modelID string) bool {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	for _, m := range rm.googleFree {
+		if m.ID == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+func (rm *RankingManager) GetGoogleFreeModels() []store.DBModel {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	res := make([]store.DBModel, len(rm.googleFree))
+	copy(res, rm.googleFree)
 	return res
 }

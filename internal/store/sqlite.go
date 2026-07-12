@@ -288,6 +288,19 @@ func (s *Store) migrate() error {
 			description TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS google_free_models_cache (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			context_length INTEGER NOT NULL DEFAULT 0,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			type TEXT NOT NULL DEFAULT '',
+			features TEXT NOT NULL DEFAULT '',
+			modalities TEXT NOT NULL DEFAULT '',
+			input_price REAL NOT NULL DEFAULT 0,
+			output_price REAL NOT NULL DEFAULT 0,
+			description TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL
+		);`,
 		`CREATE TABLE IF NOT EXISTS model_usage (
 			provider TEXT NOT NULL,
 			key_hash TEXT NOT NULL,
@@ -381,7 +394,7 @@ func (s *Store) migrate() error {
 	// substr вместо date(): modernc пишет time.Time как "2026-07-06 23:30:45 +0000 UTC",
 	//SQLite date() это не парсит → NULL → сравнение всегда false.
 	_, _ = s.db.Exec(`UPDATE keys SET usage_today = 0 WHERE provider = 'openrouter' AND substr(last_used_at, 1, 10) < date('now') AND usage_today > 0;`)
-	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix');`)
+	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google');`)
 
 	return nil
 }
@@ -878,6 +891,8 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	maxLimit := int64(0)
 	if provider == "aihubmix" {
 		maxLimit = limits.AIHubMixFreeRequestsDay
+	} else if provider == "google" {
+		maxLimit = limits.GoogleFreeRequestsDay
 	}
 
 	existsStmt, err := tx.Prepare(`SELECT 1 FROM keys WHERE key_hash = ?`)
@@ -1219,6 +1234,50 @@ func (s *Store) CacheAihubmixFreeModels(models []DBModel) error {
 
 func (s *Store) GetCachedAihubmixFreeModels() ([]DBModel, error) {
 	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM aihubmix_free_models_cache ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var res []DBModel
+	for rows.Next() {
+		m := DBModel{}
+		if err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.Description, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		res = append(res, m)
+	}
+	return res, nil
+}
+
+func (s *Store) CacheGoogleFreeModels(models []DBModel) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec("DELETE FROM google_free_models_cache")
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(`INSERT INTO google_free_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, m := range models {
+		if _, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.Description, m.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetCachedGoogleFreeModels() ([]DBModel, error) {
+	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM google_free_models_cache ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
