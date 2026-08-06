@@ -91,7 +91,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// RankingManager не стартуем — нужен только как zero-value для API.
 	rm := models.NewRankingManager(s, 0)
 
-	ws := web.NewWebServer(cfg, s, rm, pools, proxies.NewPool(s))
+	ws := web.NewWebServer(cfg, s, rm, nil, pools, proxies.NewPool(s))
 	mux := http.NewServeMux()
 	ws.Start(mux)
 

@@ -131,7 +131,12 @@ func main() {
 		"aihubmix":   aihubmixPool,
 		"google":     googlePool,
 	}
-	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, pools, proxyPool)
+	modelChecker := models.NewModelChecker(dbStore, cfg.GatewayToken, map[string]string{
+		"openrouter": "http://127.0.0.1" + cfg.ListenAddr,
+		"aihubmix":   "http://127.0.0.1" + cfg.AIHubMixListenAddr,
+		"google":     "http://127.0.0.1" + cfg.GoogleListenAddr,
+	})
+	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, modelChecker, pools, proxyPool)
 
 	// OpenRouter mux: /v1/* → OpenRouter proxy, / → admin
 	orMux := http.NewServeMux()
@@ -164,6 +169,8 @@ func main() {
 			log.Fatalf("AIHubMix server failure: %v", err)
 		}
 	}()
+	modelChecker.Start()
+	log.Println("Background model availability checker started.")
 	go func() {
 		log.Printf("Google server on %s", cfg.GoogleListenAddr)
 		if err := gServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -177,6 +184,7 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 	dailyResetCancel()
+	modelChecker.Stop()
 	keyChecker.Stop()
 	aihubmixChecker.Stop()
 	googleChecker.Stop()

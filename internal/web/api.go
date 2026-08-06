@@ -69,6 +69,185 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/proxies/stats", ws.basicAuth(ws.apiProxyStats))
 	mux.HandleFunc("/api/v2/proxies/usage/5m", ws.basicAuth(ws.apiProxyUsage5m))
 	mux.HandleFunc("/api/v2/proxy-settings", ws.basicAuth(ws.apiProxySettings))
+	mux.HandleFunc("/api/v2/model-checks", ws.basicAuth(ws.apiModelChecks))
+	mux.HandleFunc("/api/v2/model-checks/config", ws.basicAuth(ws.apiModelCheckConfig))
+	mux.HandleFunc("/api/v2/model-checks/order", ws.basicAuth(ws.apiModelCheckOrder))
+	mux.HandleFunc("/api/v2/model-checks/test", ws.basicAuth(ws.apiModelCheckTest))
+}
+
+type modelCheckHour struct {
+	Hour    string   `json:"hour"`
+	Percent int      `json:"percent"`
+	Errors  []string `json:"errors"`
+	HasData bool     `json:"has_data"`
+	Checks  int      `json:"checks"`
+}
+
+type modelCheckItem struct {
+	Model    string           `json:"model"`
+	Name     string           `json:"name"`
+	Enabled  bool             `json:"enabled"`
+	Position int              `json:"position"`
+	Hours    []modelCheckHour `json:"hours"`
+	Status   string           `json:"status"`
+}
+
+func (ws *WebServer) apiModelChecks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	provider, _ := providerFromRequest(r)
+	var catalog []store.DBModel
+	switch provider {
+	case "openrouter":
+		catalog = append(ws.rankingMgr.GetTopModels(), ws.rankingMgr.GetFreeModels()...)
+	case "aihubmix":
+		catalog = ws.rankingMgr.GetAihubmixFreeModels()
+	case "google":
+		catalog = ws.rankingMgr.GetGoogleFreeModels()
+	}
+	if provider == "openrouter" {
+		catalog = append([]store.DBModel{{ID: "top1", Name: "top1"}, {ID: "top2", Name: "top2"}, {ID: "top3", Name: "top3"}}, catalog...)
+	}
+	seen := make(map[string]bool, len(catalog))
+	uniqueCatalog := make([]store.DBModel, 0, len(catalog))
+	for _, model := range catalog {
+		if !seen[model.ID] {
+			seen[model.ID] = true
+			uniqueCatalog = append(uniqueCatalog, model)
+		}
+	}
+	catalog = uniqueCatalog
+	configs, err := ws.store.GetModelCheckConfigs()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "model checks load failed")
+		return
+	}
+	configByModel := map[string]store.ModelCheckConfig{}
+	for _, config := range configs {
+		if config.Provider == provider {
+			configByModel[config.Model] = config
+		}
+	}
+	now := time.Now().UTC().Truncate(time.Hour)
+	since := now.Add(-95 * time.Hour)
+	out := make([]modelCheckItem, 0, len(catalog))
+	for index, model := range catalog {
+		config, configured := configByModel[model.ID]
+		enabled := configured && config.Enabled
+		position := index
+		if configured {
+			position = config.Position
+		}
+		results, err := ws.store.GetModelCheckResults(provider, model.ID, since)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "model check history load failed")
+			return
+		}
+		hours := make([]modelCheckHour, 96)
+		for i := range hours {
+			hours[i].Hour = since.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
+		}
+		counts := make([][2]int, 96)
+		for _, result := range results {
+			i := int(result.Timestamp.UTC().Truncate(time.Hour).Sub(since) / time.Hour)
+			if i < 0 || i >= len(hours) {
+				continue
+			}
+			counts[i][1]++
+			if result.Success {
+				counts[i][0]++
+			} else {
+				hours[i].Errors = append(hours[i].Errors, result.Error)
+			}
+		}
+		for i, count := range counts {
+			if count[1] > 0 {
+				hours[i].HasData = true
+				hours[i].Percent = count[0] * 100 / count[1]
+				hours[i].Checks = count[1]
+			}
+		}
+		status := ""
+		if enabled {
+			status = "ок"
+			for i := 0; i < len(results) && i < 10; i++ {
+				if !results[i].Success {
+					status = results[i].Error
+					break
+				}
+			}
+		}
+		out = append(out, modelCheckItem{Model: model.ID, Name: model.Name, Enabled: enabled, Position: position, Hours: hours, Status: status})
+	}
+	// Configured rows retain their explicit drag-and-drop order; unconfigured follow catalog order.
+	for i := range out {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].Position < out[i].Position {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (ws *WebServer) apiModelCheckConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var config store.ModelCheckConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil || (config.Provider != "openrouter" && config.Provider != "aihubmix" && config.Provider != "google") || config.Model == "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid model check config")
+		return
+	}
+	if err := ws.store.SaveModelCheckConfig(config); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "model check config save failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (ws *WebServer) apiModelCheckOrder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Provider string   `json:"provider"`
+		Models   []string `json:"models"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google") {
+		writeAPIError(w, http.StatusBadRequest, "invalid model check order")
+		return
+	}
+	if err := ws.store.SaveModelCheckOrder(body.Provider, body.Models); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "model check order save failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"saved": true})
+}
+
+func (ws *WebServer) apiModelCheckTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google") || body.Model == "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid model check test")
+		return
+	}
+	if ws.modelChecker == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "model checker unavailable")
+		return
+	}
+	ws.modelChecker.Check(body.Provider, body.Model)
+	writeJSON(w, http.StatusOK, map[string]bool{"tested": true})
 }
 
 // ---- Ресурс: провайдеры ----

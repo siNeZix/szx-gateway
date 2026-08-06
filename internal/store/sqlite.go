@@ -158,6 +158,19 @@ type UsageBucket struct {
 	Errors     int64  `json:"errors"`
 }
 
+type ModelCheckConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Enabled  bool   `json:"enabled"`
+	Position int    `json:"position"`
+}
+
+type ModelCheckResult struct {
+	Timestamp time.Time `json:"timestamp"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error"`
+}
+
 type RequestLogItem struct {
 	ID         int64  `json:"id"`
 	Timestamp  string `json:"timestamp"`
@@ -205,6 +218,83 @@ func New(dbPath string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) GetEnabledModelChecks() ([]ModelCheckConfig, error) {
+	return s.getModelCheckConfigs(`SELECT provider, model, enabled, position FROM model_check_configs WHERE enabled = 1 ORDER BY provider, position, model`)
+}
+
+func (s *Store) GetModelCheckConfigs() ([]ModelCheckConfig, error) {
+	return s.getModelCheckConfigs(`SELECT provider, model, enabled, position FROM model_check_configs ORDER BY provider, position, model`)
+}
+
+func (s *Store) getModelCheckConfigs(query string) ([]ModelCheckConfig, error) {
+	rows, err := s.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelCheckConfig
+	for rows.Next() {
+		var item ModelCheckConfig
+		if err := rows.Scan(&item.Provider, &item.Model, &item.Enabled, &item.Position); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SaveModelCheckConfig(config ModelCheckConfig) error {
+	_, err := s.db.Exec(`INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, ?, ?)
+		ON CONFLICT(provider, model) DO UPDATE SET enabled = excluded.enabled, position = excluded.position`, config.Provider, config.Model, config.Enabled, config.Position)
+	return err
+}
+
+func (s *Store) SaveModelCheckOrder(provider string, models []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for position, model := range models {
+		if _, err := tx.Exec(`INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, 0, ?)
+			ON CONFLICT(provider, model) DO UPDATE SET position = excluded.position`, provider, model, position); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) AddModelCheckResult(provider, model string, success bool, errorMsg string) error {
+	_, err := s.db.Exec(`INSERT INTO model_check_results(provider, model, timestamp, success, error) VALUES (?, ?, ?, ?, ?)`, provider, model, time.Now().UTC(), success, errorMsg)
+	return err
+}
+
+func (s *Store) GetLatestModelCheckResult(provider, model string) (ModelCheckResult, bool, error) {
+	var result ModelCheckResult
+	err := s.db.QueryRow(`SELECT timestamp, success, error FROM model_check_results WHERE provider = ? AND model = ? ORDER BY timestamp DESC LIMIT 1`, provider, model).Scan(&result.Timestamp, &result.Success, &result.Error)
+	if err == sql.ErrNoRows {
+		return ModelCheckResult{}, false, nil
+	}
+	return result, err == nil, err
+}
+
+func (s *Store) GetModelCheckResults(provider, model string, since time.Time) ([]ModelCheckResult, error) {
+	rows, err := s.db.Query(`SELECT timestamp, success, error FROM model_check_results WHERE provider = ? AND model = ? AND timestamp >= ? ORDER BY timestamp DESC`, provider, model, since.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelCheckResult
+	for rows.Next() {
+		var result ModelCheckResult
+		if err := rows.Scan(&result.Timestamp, &result.Success, &result.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, result)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) migrate() error {
@@ -349,6 +439,22 @@ func (s *Store) migrate() error {
 			error_msg TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_proxy_logs_timestamp ON proxy_logs(timestamp);`,
+		`CREATE TABLE IF NOT EXISTS model_check_configs (
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			position INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (provider, model)
+		);`,
+		`CREATE TABLE IF NOT EXISTS model_check_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider TEXT NOT NULL,
+			model TEXT NOT NULL,
+			timestamp DATETIME NOT NULL,
+			success INTEGER NOT NULL,
+			error TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_model_check_results_lookup ON model_check_results(provider, model, timestamp);`,
 	}
 
 	for _, q := range queries {

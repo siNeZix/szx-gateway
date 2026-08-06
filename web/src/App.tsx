@@ -7,6 +7,7 @@ import Keys from './pages/Keys'
 import Stats from './pages/Stats'
 import Models from './pages/Models'
 import Proxies from './pages/Proxies'
+import Status from './pages/Status'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
             <Route path="/keys" element={<Keys />} />
             <Route path="/stats" element={<Stats />} />
             <Route path="/models" element={<Models />} />
+			<Route path="/status" element={<Status />} />
             <Route path="/proxies" element={<Proxies />} />
           </Route>
         </Routes>

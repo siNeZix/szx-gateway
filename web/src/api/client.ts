@@ -1,6 +1,7 @@
 import type {
   KeyUsageStats,
   ModelStats,
+	ModelCheckItem,
   ModelsResponse,
   ModelUsageTrend,
   Provider,
@@ -85,6 +86,18 @@ export const api = {
 
   models: (provider: Provider) =>
     getJSON<ModelsResponse>(`/api/v2/models?provider=${provider}`),
+
+  modelChecks: (provider: Provider) =>
+    getJSON<ModelCheckItem[]>(`/api/v2/model-checks?provider=${provider}`),
+
+  saveModelCheck: (provider: Provider, model: string, enabled: boolean, position: number) =>
+    postJSON<ModelCheckItem>('/api/v2/model-checks/config', { provider, model, enabled, position }),
+
+  saveModelCheckOrder: (provider: Provider, models: string[]) =>
+    postJSON<{ saved: boolean }>('/api/v2/model-checks/order', { provider, models }),
+
+  testModelCheck: (provider: Provider, model: string) =>
+    postJSON<{ tested: boolean }>('/api/v2/model-checks/test', { provider, model }),
 
   keys: (provider: Provider, status = '') =>
     getJSON<KeyUsageStats[]>(

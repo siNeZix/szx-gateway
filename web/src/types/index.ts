@@ -160,3 +160,20 @@ export interface ProxyUsageBucket {
   requests: number
   errors: number
 }
+
+export interface ModelCheckHour {
+  hour: string
+  percent: number
+  errors: string[]
+  has_data: boolean
+	checks: number
+}
+
+export interface ModelCheckItem {
+  model: string
+  name: string
+  enabled: boolean
+  position: number
+  hours: ModelCheckHour[]
+  status: string
+}

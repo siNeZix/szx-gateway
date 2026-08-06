@@ -12,20 +12,22 @@ import (
 )
 
 type WebServer struct {
-	cfg        *config.Config
-	store      *store.Store
-	rankingMgr *models.RankingManager
-	pools      map[string]*keys.KeyPool
-	proxies    *proxies.Pool
+	cfg          *config.Config
+	store        *store.Store
+	rankingMgr   *models.RankingManager
+	modelChecker *models.ModelChecker
+	pools        map[string]*keys.KeyPool
+	proxies      *proxies.Pool
 }
 
-func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, pools map[string]*keys.KeyPool, proxyPool *proxies.Pool) *WebServer {
+func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, modelChecker *models.ModelChecker, pools map[string]*keys.KeyPool, proxyPool *proxies.Pool) *WebServer {
 	return &WebServer{
-		cfg:        cfg,
-		store:      s,
-		rankingMgr: rm,
-		pools:      pools,
-		proxies:    proxyPool,
+		cfg:          cfg,
+		store:        s,
+		rankingMgr:   rm,
+		modelChecker: modelChecker,
+		pools:        pools,
+		proxies:      proxyPool,
 	}
 }
 
