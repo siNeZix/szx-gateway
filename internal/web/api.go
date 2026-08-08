@@ -53,26 +53,70 @@ func requireProviderForm(r *http.Request) (string, bool) {
 // ответы в {data:...}/{error:...}. Когда SPA покроет функционал, старый /api/stats
 // и form-эндпоинты /keys/* будут удалены, а v2-префикс можно будет бросить.
 func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/v2/providers", ws.basicAuth(ws.apiProviders))
-	mux.HandleFunc("/api/v2/keys", ws.basicAuth(ws.apiKeys))
-	mux.HandleFunc("/api/v2/keys/bulk", ws.basicAuth(ws.apiKeysBulk))
-	mux.HandleFunc("/api/v2/stats", ws.basicAuth(ws.apiStats))
-	mux.HandleFunc("/api/v2/stats/models", ws.basicAuth(ws.apiStatsModels))
-	mux.HandleFunc("/api/v2/stats/usage", ws.basicAuth(ws.apiStatsUsage))
-	mux.HandleFunc("/api/v2/stats/usage/hourly", ws.basicAuth(ws.apiStatsUsageHourly))
-	mux.HandleFunc("/api/v2/stats/usage/5m", ws.basicAuth(ws.apiStatsUsage5m))
-	mux.HandleFunc("/api/v2/requests", ws.basicAuth(ws.apiRequests))
-	mux.HandleFunc("/api/v2/models", ws.basicAuth(ws.apiModels))
-	mux.HandleFunc("/api/v2/proxies", ws.basicAuth(ws.apiProxies))
-	mux.HandleFunc("/api/v2/proxies/bulk", ws.basicAuth(ws.apiProxiesBulk))
-	mux.HandleFunc("/api/v2/proxies/logs", ws.basicAuth(ws.apiProxyLogs))
-	mux.HandleFunc("/api/v2/proxies/stats", ws.basicAuth(ws.apiProxyStats))
-	mux.HandleFunc("/api/v2/proxies/usage/5m", ws.basicAuth(ws.apiProxyUsage5m))
-	mux.HandleFunc("/api/v2/proxy-settings", ws.basicAuth(ws.apiProxySettings))
-	mux.HandleFunc("/api/v2/model-checks", ws.basicAuth(ws.apiModelChecks))
-	mux.HandleFunc("/api/v2/model-checks/config", ws.basicAuth(ws.apiModelCheckConfig))
-	mux.HandleFunc("/api/v2/model-checks/order", ws.basicAuth(ws.apiModelCheckOrder))
-	mux.HandleFunc("/api/v2/model-checks/test", ws.basicAuth(ws.apiModelCheckTest))
+	mux.HandleFunc("/api/v2/auth/check", ws.apiAuthCheck)
+	mux.HandleFunc("/api/v2/auth/login", ws.apiAuthLogin)
+	mux.HandleFunc("/api/v2/auth/logout", ws.apiAuthLogout)
+	mux.HandleFunc("/api/v2/providers", ws.requireAuth(ws.apiProviders))
+	mux.HandleFunc("/api/v2/keys", ws.requireAuth(ws.apiKeys))
+	mux.HandleFunc("/api/v2/keys/bulk", ws.requireAuth(ws.apiKeysBulk))
+	mux.HandleFunc("/api/v2/stats", ws.requireAuth(ws.apiStats))
+	mux.HandleFunc("/api/v2/stats/models", ws.requireAuth(ws.apiStatsModels))
+	mux.HandleFunc("/api/v2/stats/usage", ws.requireAuth(ws.apiStatsUsage))
+	mux.HandleFunc("/api/v2/stats/usage/hourly", ws.requireAuth(ws.apiStatsUsageHourly))
+	mux.HandleFunc("/api/v2/stats/usage/5m", ws.requireAuth(ws.apiStatsUsage5m))
+	mux.HandleFunc("/api/v2/requests", ws.requireAuth(ws.apiRequests))
+	mux.HandleFunc("/api/v2/models", ws.requireAuth(ws.apiModels))
+	mux.HandleFunc("/api/v2/proxies", ws.requireAuth(ws.apiProxies))
+	mux.HandleFunc("/api/v2/proxies/bulk", ws.requireAuth(ws.apiProxiesBulk))
+	mux.HandleFunc("/api/v2/proxies/logs", ws.requireAuth(ws.apiProxyLogs))
+	mux.HandleFunc("/api/v2/proxies/stats", ws.requireAuth(ws.apiProxyStats))
+	mux.HandleFunc("/api/v2/proxies/usage/5m", ws.requireAuth(ws.apiProxyUsage5m))
+	mux.HandleFunc("/api/v2/proxy-settings", ws.requireAuth(ws.apiProxySettings))
+	mux.HandleFunc("/api/v2/model-checks", ws.requireAuth(ws.apiModelChecks))
+	mux.HandleFunc("/api/v2/model-checks/config", ws.requireAuth(ws.apiModelCheckConfig))
+	mux.HandleFunc("/api/v2/model-checks/order", ws.requireAuth(ws.apiModelCheckOrder))
+	mux.HandleFunc("/api/v2/model-checks/test", ws.requireAuth(ws.apiModelCheckTest))
+}
+
+func (ws *WebServer) apiAuthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if (ws.cfg.WebUsername != "" || ws.cfg.WebPassword != "") && !ws.refreshSession(r, w) {
+		writeAPIError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+}
+
+func (ws *WebServer) apiAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var credentials struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil || !ws.credentialsValid(credentials.Username, credentials.Password) {
+		writeAPIError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	if err := ws.createSession(w); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "session create failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+}
+
+func (ws *WebServer) apiAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ws.deleteSession(r, w)
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 }
 
 type modelCheckHour struct {

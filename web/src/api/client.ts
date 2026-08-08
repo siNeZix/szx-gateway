@@ -56,7 +56,23 @@ async function deleteJSON<T>(path: string): Promise<T> {
   return unwrap<T>(res)
 }
 
+async function authJSON(path: string, payload?: unknown): Promise<void> {
+  const res = await fetch(path, {
+    method: payload === undefined ? 'GET' : 'POST',
+    headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => null) as { error?: string } | null
+    throw new Error(body?.error || res.statusText || `HTTP ${res.status}`)
+  }
+}
+
 export const api = {
+  checkAuth: () => authJSON('/api/v2/auth/check'),
+  login: (username: string, password: string) => authJSON('/api/v2/auth/login', { username, password }),
+  logout: () => authJSON('/api/v2/auth/logout', {}),
+
   providers: () => getJSON<ProviderInfo[]>('/api/v2/providers'),
 
   stats: (provider: Provider) =>
