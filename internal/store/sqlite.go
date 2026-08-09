@@ -1534,12 +1534,8 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 			k.masked_key, 
 			k.key_hash, 
 			k.status, 
-		-- ponytail: defensive reset на стороне SQL. Если последний запрос через ключ
-		-- был в прошлом UTC-дне, отдаём 0 — страхует первые секунды после полуночи,
-		-- пока фоновый тикер (main.go) не сбросил usage_today в памяти и БД.
-		-- substr вместо date(): modernc пишет time.Time как "2026-07-06 23:30:45 +0000 UTC",
-		-- SQLite date() это не парсит → NULL → сравнение всегда false.
-		CASE WHEN substr(k.last_used_at, 1, 10) < date('now') THEN 0 ELSE k.usage_today END AS usage_today,
+		-- usage_day is the UTC quota boundary; last_used_at is audit-only.
+		CASE WHEN k.usage_day <> date('now') THEN 0 ELSE k.usage_today END AS usage_today,
 			k.max_limit, 
 			k.cooldown_until,
 			k.last_used_at,

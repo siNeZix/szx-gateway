@@ -248,10 +248,7 @@ func TestStore_RateLimitsAndRequestsLog(t *testing.T) {
 	}
 }
 
-// ponytail: regression test. date(last_used_at) возвращает NULL в modernc
-// (драйвер пишет time.Time как "2026-07-06 23:30:45 +0000 UTC", SQLite это не парсит).
-// substr(last_used_at, 1, 10) — рабочий workaround. Тест падает, если кто-то
-// вернёт date() обратно: вчерашний ключ должен показать usage_today=0.
+// usage_day, not last_used_at, determines which UTC quota day owns usage_today.
 func TestStore_GetKeyUsageStats_ResetsExpiredDaily(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_stats_reset.db")
@@ -266,14 +263,14 @@ func TestStore_GetKeyUsageStats_ResetsExpiredDaily(t *testing.T) {
 		t.Fatalf("AddKeys failed: %v", err)
 	}
 
-	// Помечаем ключ как вчерашний с usage_today=10 и day_exhausted.
+	// Stale quota day must show zero even if LastUsedAt is current audit data.
 	dbKeys, err := s.GetKeys("openrouter")
 	if err != nil {
 		t.Fatalf("GetKeys failed: %v", err)
 	}
 	k := dbKeys[0]
-	yesterday := time.Now().UTC().Add(-48 * time.Hour)
-	k.LastUsedAt = yesterday
+	k.LastUsedAt = time.Now()
+	k.UsageDay = time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02")
 	k.UsageToday = 10
 	k.Status = "day_exhausted"
 	if err := s.UpdateKey(k, "openrouter"); err != nil {
@@ -288,6 +285,6 @@ func TestStore_GetKeyUsageStats_ResetsExpiredDaily(t *testing.T) {
 		t.Fatalf("expected 1 stat row, got %d", len(stats))
 	}
 	if stats[0].TodayUsage != 0 {
-		t.Errorf("expected stale key to show usage_today=0, got %d (date()/substr regression)", stats[0].TodayUsage)
+		t.Errorf("expected stale quota day to show usage_today=0, got %d", stats[0].TodayUsage)
 	}
 }

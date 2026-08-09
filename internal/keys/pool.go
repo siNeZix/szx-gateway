@@ -66,6 +66,7 @@ func (kp *KeyPool) Load() error {
 			existing.CooldownUntil = dbK.CooldownUntil
 			existing.LastCheckedAt = dbK.LastCheckedAt
 			existing.LastUsedAt = dbK.LastUsedAt
+			existing.UsageDay = dbK.UsageDay
 			existing.mu.Unlock()
 			ks = existing
 		} else {
