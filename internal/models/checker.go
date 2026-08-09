@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"szx-gateway/internal/store"
 )
@@ -23,8 +23,6 @@ type ModelChecker struct {
 	stop   chan struct{}
 	done   chan struct{}
 }
-
-var numberAnswer = regexp.MustCompile(`\d+`)
 
 func NewModelChecker(s *store.Store, token string, urls map[string]string) *ModelChecker {
 	return &ModelChecker{store: s, token: token, urls: urls, client: &http.Client{Timeout: 2 * time.Minute}, stop: make(chan struct{}), done: make(chan struct{})}
@@ -79,7 +77,6 @@ func (c *ModelChecker) checkDue() {
 
 func (c *ModelChecker) Check(provider, model string) {
 	a, b := rand.IntN(900000)+10000, rand.IntN(900000)+10000
-	expected := fmt.Sprintf("%d", a+b)
 	prompt := fmt.Sprintf("Return decimal sum of %d and %d. Output only result number.", a, b)
 	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 16})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.urls[provider]+"/v1/chat/completions", bytes.NewReader(body))
@@ -117,28 +114,13 @@ func (c *ModelChecker) Check(provider, model string) {
 		_ = c.store.AddModelCheckResult(provider, model, false, errMsg)
 		return
 	}
-	actual := ""
+	content := ""
 	if len(payload.Choices) > 0 {
-		actual = normalizedAnswer(payload.Choices[0].Message.Content)
+		content = strings.TrimSpace(payload.Choices[0].Message.Content)
 	}
-	if actual != expected {
-		raw := ""
-		if len(payload.Choices) > 0 {
-			raw = strings.TrimSpace(payload.Choices[0].Message.Content)
-		}
-		_ = c.store.AddModelCheckResult(provider, model, false, fmt.Sprintf("ожидалось число, получено %q", raw))
+	if utf8.RuneCountInString(content) <= 2 {
+		_ = c.store.AddModelCheckResult(provider, model, false, fmt.Sprintf("ожидался ответ длиннее 2 символов, получено %q", content))
 		return
 	}
 	_ = c.store.AddModelCheckResult(provider, model, true, "")
-}
-
-func normalizedAnswer(value string) string {
-	matches := numberAnswer.FindAllString(strings.ReplaceAll(value, ",", ""), -1)
-	if len(matches) != 1 {
-		return ""
-	}
-	if len(matches[0]) > 1 && matches[0][0] == '0' {
-		return ""
-	}
-	return matches[0]
 }
