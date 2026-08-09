@@ -397,6 +397,15 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			return
 		}
 		triedKeys[keyState.KeyHash] = true
+		limit, _ := limits.GoogleFree(chatReq.Model)
+		reservedModelUsage, err := h.store.ReserveModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now(), limit.RequestsDay)
+		if err != nil {
+			writeProxyError(w, http.StatusInternalServerError, "Failed to reserve Google daily quota")
+			return
+		}
+		if !reservedModelUsage {
+			continue
+		}
 		h.pool.SyncKeyToDB(keyState)
 
 		log.Printf("[Google %d/%d] %s via key %s", attempt, maxAttempts, chatReq.Model, keyState.MaskedKey)
@@ -412,6 +421,9 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 
 		req, err := http.NewRequest("POST", targetURL, bytes.NewReader(gemBody))
 		if err != nil {
+			keyState.RollbackUsage()
+			_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
+			h.pool.SyncKeyToDB(keyState)
 			writeProxyError(w, http.StatusInternalServerError, "Internal gateway error creating request")
 			return
 		}
@@ -430,6 +442,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			h.logProxy(proxyID, int64(len(gemBody)), 0, 0, false, err.Error(), startTime)
 			log.Printf("[Google] network error: %v", err)
 			keyState.RollbackUsage()
+			_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 			h.pool.SyncKeyToDB(keyState)
 			finalErr = err
 			continue
@@ -442,6 +455,8 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			switch resp.StatusCode {
 			case http.StatusUnauthorized, http.StatusForbidden:
 				log.Printf("[Google] key %s invalid (status %d)", keyState.MaskedKey, resp.StatusCode)
+				keyState.RollbackUsage()
+				_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 				keyState.SetStatus("invalid")
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("key invalid with status %d", resp.StatusCode)
@@ -449,12 +464,8 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			case http.StatusTooManyRequests:
 				log.Printf("[Google] key %s rate-limited (status %d)", keyState.MaskedKey, resp.StatusCode)
 				keyState.RollbackUsage()
-				limit, _ := limits.GoogleFree(chatReq.Model)
-				if limit.RequestsDay > 0 && keyState.UsageToday >= limit.RequestsDay {
-					keyState.MarkDayExhausted()
-				} else {
-					keyState.SetCooldown(5*time.Minute, "rate_limited")
-				}
+				_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
+				keyState.SetCooldown(5*time.Minute, "rate_limited")
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("key rate-limited with status %d", resp.StatusCode)
 				continue
@@ -462,6 +473,8 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				// Модель не поддерживается этим ключом или плохой запрос
 				if strings.Contains(strings.ToLower(string(bodySnippet)), "not found") || strings.Contains(strings.ToLower(string(bodySnippet)), "does not support") {
 					log.Printf("[Google] key %s model %s not available", keyState.MaskedKey, chatReq.Model)
+					keyState.RollbackUsage()
+					_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 					keyState.SetModelCooldown(chatReq.Model, time.Now().Add(24*time.Hour))
 					h.pool.SyncKeyToDB(keyState)
 					finalErr = fmt.Errorf("model not available for key")
@@ -470,6 +483,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				// Прочие 400 — возвращаем клиенту
 				log.Printf("[Google] bad request (status 400)")
 				keyState.RollbackUsage()
+				_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 				h.pool.SyncKeyToDB(keyState)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -480,6 +494,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				if resp.StatusCode >= 500 {
 					log.Printf("[Google] key %s transient upstream error (status %d)", keyState.MaskedKey, resp.StatusCode)
 					keyState.RollbackUsage()
+					_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 					keyState.SetCooldown(30*time.Second, "")
 					h.pool.SyncKeyToDB(keyState)
 					finalErr = fmt.Errorf("transient upstream error with status %d", resp.StatusCode)
@@ -488,6 +503,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 				// Прочие ошибки — релеим
 				log.Printf("[Google] status %d, relaying to client", resp.StatusCode)
 				keyState.RollbackUsage()
+				_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 				h.pool.SyncKeyToDB(keyState)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(resp.StatusCode)
@@ -516,6 +532,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		if err != nil {
 			log.Printf("[Google] failed to read response: %v", err)
 			keyState.RollbackUsage()
+			_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 			h.pool.SyncKeyToDB(keyState)
 			finalErr = err
 			continue
@@ -525,6 +542,7 @@ func (h *GoogleHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 		if err := json.Unmarshal(respBody, &gemResp); err != nil {
 			log.Printf("[Google] failed to decode Gemini response: %v", err)
 			keyState.RollbackUsage()
+			_ = h.store.RollbackModelUsage("google", keyState.KeyHash, chatReq.Model, time.Now())
 			h.pool.SyncKeyToDB(keyState)
 			finalErr = err
 			continue
@@ -569,7 +587,7 @@ func (h *GoogleHandler) logRequest(ks *keys.KeyState, model string, statusCode i
 	if statusCode >= 400 {
 		tokForAgg = 0
 	}
-	if err := h.store.AddModelUsage("google", ks.KeyHash, model, time.Now(), 1, tokForAgg, latencyMs, errCount); err != nil {
+	if err := h.store.AddModelUsage("google", ks.KeyHash, model, time.Now(), 0, tokForAgg, latencyMs, errCount); err != nil {
 		log.Printf("[Google] failed to log model usage: %v", err)
 	}
 }

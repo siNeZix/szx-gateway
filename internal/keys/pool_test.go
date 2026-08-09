@@ -31,21 +31,26 @@ func TestResetExpiredDailyUsage(t *testing.T) {
 
 	yesterday := time.Now().Add(-48 * time.Hour)
 	today := time.Now()
+	yesterdayDay := yesterday.UTC().Format("2006-01-02")
+	todayDay := today.UTC().Format("2006-01-02")
 
 	// Готовим три ключа: один вчерашний exhausted, один вчерашний active, один сегодняшний.
 	for i, ks := range pool.keys {
 		switch i {
 		case 0:
 			ks.LastUsedAt = yesterday
+			ks.UsageDay = yesterdayDay
 			ks.UsageToday = 10
 			ks.MaxLimit = 10
 			ks.Status = "day_exhausted"
 		case 1:
 			ks.LastUsedAt = yesterday
+			ks.UsageDay = yesterdayDay
 			ks.UsageToday = 5
 			ks.Status = "active"
 		case 2:
 			ks.LastUsedAt = today
+			ks.UsageDay = todayDay
 			ks.UsageToday = 3
 			ks.Status = "active"
 		}

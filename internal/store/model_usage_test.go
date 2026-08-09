@@ -48,6 +48,30 @@ func TestModelExhaustedIsPerModel(t *testing.T) {
 	}
 }
 
+func TestReserveModelUsageEnforcesPerModelDailyLimit(t *testing.T) {
+	s, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now()
+	for i := 0; i < 25; i++ {
+		reserved, err := s.ReserveModelUsage("google", "k", "gemini-2.5-pro", now, 25)
+		if err != nil || !reserved {
+			t.Fatalf("reservation %d: reserved=%v err=%v", i, reserved, err)
+		}
+	}
+	reserved, err := s.ReserveModelUsage("google", "k", "gemini-2.5-pro", now, 25)
+	if err != nil || reserved {
+		t.Fatalf("26th pro request must be denied: reserved=%v err=%v", reserved, err)
+	}
+	reserved, err = s.ReserveModelUsage("google", "k", "gemini-2.5-flash", now, 500)
+	if err != nil || !reserved {
+		t.Fatalf("another model must retain its own quota: reserved=%v err=%v", reserved, err)
+	}
+}
+
 func TestModelStatsUsesLocalDay(t *testing.T) {
 	s, err := New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -113,8 +137,7 @@ func TestRequestTrendAndLogUseRequests(t *testing.T) {
 	}
 	defer s.Close()
 
-	n := time.Now().UTC()
-	now := time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, time.UTC)
+	now := time.Now().In(time.Local).Add(-time.Minute)
 	for _, r := range []*DBRequest{
 		{Timestamp: now.Add(-time.Hour), KeyHash: "k1", Model: "m1", StatusCode: 200, PromptTokens: 2, CompletionTokens: 3, LatencyMs: 100, TTFTMs: 40, Provider: "openrouter"},
 		{Timestamp: now, KeyHash: "k2", Model: "m2", StatusCode: 429, ErrorMsg: "rate limited", LatencyMs: 300, TTFTMs: 300, IsStream: true, Provider: "openrouter"},

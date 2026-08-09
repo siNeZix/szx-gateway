@@ -188,7 +188,12 @@ func (kp *KeyPool) GetBestKeyForModelExcluding(model string, exclude map[string]
 		return nil, fmt.Errorf("key pool is empty")
 	}
 
-	limit, _ := limits.AIHubMixFree(model)
+	var limit limits.Limit
+	if kp.provider == "google" {
+		limit, _ = limits.GoogleFree(model)
+	} else {
+		limit, _ = limits.AIHubMixFree(model)
+	}
 	now := time.Now()
 
 	// ponytail: O(n) scan + reservation retry on contention. Fine for a few
@@ -224,7 +229,7 @@ func (kp *KeyPool) GetBestKeyForModelExcluding(model string, exclude map[string]
 }
 
 // ResetExpiredDailyUsage сбрасывает UsageToday и статус day_exhausted у ключей,
-// чей LastUsedAt в прошлом UTC-дне. Возвращает количество сброшенных.
+// чей отдельный UTC-день учёта устарел. Возвращает количество сброшенных.
 // ponytail: global pool scan O(n), нормально при текущих объёмах пула.
 func (kp *KeyPool) ResetExpiredDailyUsage() int {
 	kp.mu.RLock()

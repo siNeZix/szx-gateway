@@ -274,6 +274,7 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			}); logErr != nil {
 				log.Printf("Failed to log request to DB: %v", logErr)
 			}
+			keyState.RollbackUsage()
 			keyState.SetCooldown(30*time.Second, "")
 			ph.pool.SyncKeyToDB(keyState)
 			finalErr = err
@@ -330,7 +331,9 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			// If it's explicitly "credit exhausted" or similar, mark as day_exhausted
 			if IsQuotaExhaustedError(respBody) {
 				log.Printf("Key %s has exhausted its quota (detected in response body). Marking day_exhausted.", keyState.MaskedKey)
-				keyState.SetStatus("day_exhausted")
+				keyState.MarkDayExhausted()
+			} else if resp.StatusCode >= http.StatusInternalServerError {
+				keyState.RollbackUsage()
 			}
 
 			ph.pool.SyncKeyToDB(keyState)
@@ -341,6 +344,8 @@ func (ph *ProxyHandler) handleChatCompletions(w http.ResponseWriter, r *http.Req
 			// Retry with another key
 			continue
 		}
+
+		ph.pool.SyncKeyToDB(keyState)
 
 		// Success! Stream or return response
 		defer resp.Body.Close()

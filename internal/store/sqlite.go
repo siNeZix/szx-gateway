@@ -21,6 +21,7 @@ type DBKey struct {
 	Status            string    `json:"status"`
 	LimitRemaining    int64     `json:"limit_remaining"`
 	UsageToday        int64     `json:"usage_today"`
+	UsageDay          string    `json:"usage_day"`
 	MaxLimit          int64     `json:"max_limit"`
 	IsFreeTier        bool      `json:"is_free_tier"`
 	RateLimitReq      int       `json:"rate_limit_req"`
@@ -307,6 +308,7 @@ func (s *Store) migrate() error {
 			status TEXT NOT NULL,
 			limit_remaining INTEGER NOT NULL DEFAULT 0,
 			usage_today INTEGER NOT NULL DEFAULT 0,
+			usage_day TEXT NOT NULL DEFAULT '',
 			max_limit INTEGER NOT NULL DEFAULT 0,
 			is_free_tier INTEGER NOT NULL DEFAULT 1,
 			rate_limit_req INTEGER NOT NULL DEFAULT 20,
@@ -491,15 +493,17 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN errors INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN freeze_count INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN frozen_until TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN usage_day TEXT NOT NULL DEFAULT '';`)
 	// ponytail: 10 запросов/аккаунт/сутки — подтверждённый лимит AIHubMix.
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
 	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
-	_, _ = s.db.Exec(`UPDATE keys SET status = 'unchecked' WHERE provider = 'aihubmix' AND status = 'day_exhausted';`)
-	// ponytail: стартовый сброс для openrouter при рестарте после UTC-полуночи —
-	// покрывает кейс, когда in-memory состояние ещё не загружено, а UI уже читает БД.
-	// substr вместо date(): modernc пишет time.Time как "2026-07-06 23:30:45 +0000 UTC",
-	//SQLite date() это не парсит → NULL → сравнение всегда false.
-	_, _ = s.db.Exec(`UPDATE keys SET usage_today = 0 WHERE provider = 'openrouter' AND substr(last_used_at, 1, 10) < date('now') AND usage_today > 0;`)
+	// Google quotas differ by model and live in model_usage, not in keys.max_limit.
+	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 0 WHERE provider = 'google';`)
+	// usage_day is the sole marker for UTC daily quotas. This also repairs legacy rows
+	// that predate the column without incorrectly unblocking keys during the same day.
+	today := UTCDay(time.Now())
+	_, _ = s.db.Exec(`UPDATE keys SET usage_day = substr(last_used_at, 1, 10) WHERE usage_day = '' AND substr(last_used_at, 1, 10) = ?`, today)
+	_, _ = s.db.Exec(`UPDATE keys SET usage_today = 0, usage_day = ?, status = CASE WHEN status = 'day_exhausted' THEN 'active' ELSE status END WHERE usage_day <> ?`, today, today)
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google');`)
 
 	return nil
@@ -801,6 +805,32 @@ func (s *Store) MarkModelExhausted(provider, keyHash, model string, now time.Tim
 	return err
 }
 
+// ReserveModelUsage atomically claims one per-model daily quota slot.
+func (s *Store) ReserveModelUsage(provider, keyHash, model string, now time.Time, limit int64) (bool, error) {
+	if limit <= 0 {
+		return true, nil
+	}
+	day := UTCDay(now)
+	res, err := s.db.Exec(`
+		INSERT INTO model_usage (provider, key_hash, model, day, requests, updated_at)
+		VALUES (?, ?, ?, ?, 1, ?)
+		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
+			requests = requests + 1,
+			updated_at = excluded.updated_at
+		WHERE model_usage.requests < ? AND model_usage.exhausted = 0
+	`, provider, keyHash, model, day, now.UTC(), limit)
+	if err != nil {
+		return false, err
+	}
+	changed, err := res.RowsAffected()
+	return changed > 0, err
+}
+
+func (s *Store) RollbackModelUsage(provider, keyHash, model string, now time.Time) error {
+	_, err := s.db.Exec(`UPDATE model_usage SET requests = requests - 1, updated_at = ? WHERE provider = ? AND key_hash = ? AND model = ? AND day = ? AND requests > 0`, now.UTC(), provider, keyHash, model, UTCDay(now))
+	return err
+}
+
 // FreezeModel замораживает модель ключа: 1-я ошибка → 1 мин, 2-я → до конца UTC-дня.
 // Возвращает длительность заморозки.
 func (s *Store) FreezeModel(provider, keyHash, model string, now time.Time) (time.Duration, error) {
@@ -997,8 +1027,6 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	maxLimit := int64(0)
 	if provider == "aihubmix" {
 		maxLimit = limits.AIHubMixFreeRequestsDay
-	} else if provider == "google" {
-		maxLimit = limits.GoogleFreeRequestsDay
 	}
 
 	existsStmt, err := tx.Prepare(`SELECT 1 FROM keys WHERE key_hash = ?`)
@@ -1008,8 +1036,8 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 	defer existsStmt.Close()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit)
-		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?)
+		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit, usage_day)
+		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider, max_limit=excluded.max_limit;
 	`)
 	if err != nil {
@@ -1024,7 +1052,7 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 		h := HashKey(k)
 		masked := MaskKey(k)
 		existed := existsStmt.QueryRow(h).Scan(new(int)) == nil
-		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider, maxLimit)
+		res, err := stmt.Exec(h, masked, zeroTime, zeroTime, zeroTime, k, provider, maxLimit, UTCDay(time.Now()))
 		if err != nil {
 			return 0, err
 		}
@@ -1100,6 +1128,7 @@ func (s *Store) UpdateKey(k *DBKey, provider string) error {
 			status = ?,
 			limit_remaining = ?,
 			usage_today = ?,
+			usage_day = ?,
 			max_limit = ?,
 			is_free_tier = ?,
 			rate_limit_req = ?,
@@ -1108,7 +1137,7 @@ func (s *Store) UpdateKey(k *DBKey, provider string) error {
 			last_checked_at = ?,
 			last_used_at = ?
 		WHERE key_hash = ? AND provider = ?
-	`, k.Status, k.LimitRemaining, k.UsageToday, k.MaxLimit,
+	`, k.Status, k.LimitRemaining, k.UsageToday, k.UsageDay, k.MaxLimit,
 		k.IsFreeTier, k.RateLimitReq, k.RateLimitInterval,
 		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.KeyHash, provider)
 	return err
@@ -1116,7 +1145,7 @@ func (s *Store) UpdateKey(k *DBKey, provider string) error {
 
 func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 	rows, err := s.db.Query(`
-		SELECT key_hash, masked_key, status, limit_remaining, usage_today, max_limit, 
+		SELECT key_hash, masked_key, status, limit_remaining, usage_today, usage_day, max_limit,
 		       is_free_tier, rate_limit_req, rate_limit_interval, cooldown_until, 
 		       last_checked_at, last_used_at, raw_key
 		FROM keys
@@ -1132,7 +1161,7 @@ func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 		k := &DBKey{}
 		var isFree int
 		err := rows.Scan(
-			&k.KeyHash, &k.MaskedKey, &k.Status, &k.LimitRemaining, &k.UsageToday, &k.MaxLimit,
+			&k.KeyHash, &k.MaskedKey, &k.Status, &k.LimitRemaining, &k.UsageToday, &k.UsageDay, &k.MaxLimit,
 			&isFree, &k.RateLimitReq, &k.RateLimitInterval, &k.CooldownUntil,
 			&k.LastCheckedAt, &k.LastUsedAt, &k.RawKey,
 		)

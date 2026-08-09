@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"szx-gateway/internal/limits"
 	"szx-gateway/internal/proxies"
 	"szx-gateway/internal/store"
 )
@@ -253,7 +252,7 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 			}
 
 			if ks.LimitRemaining <= 0 && ks.MaxLimit > 0 {
-				ks.Status = "day_exhausted"
+				ks.markDayExhaustedLocked(now)
 			} else {
 				// OpenRouter сбросил дневной лимит (limit_remaining > 0):
 				// синхронизируем локальный счётчик из апстрима, иначе он навечно отстанет.
@@ -279,11 +278,12 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 				RateLimitInterval: rateLimitIntervalVal,
 			})
 		} else {
-			ks.Status = "active"
+			// These endpoints validate credentials only; they do not report daily
+			// quota state, so a successful check must not revive an exhausted key.
+			if ks.Status != "day_exhausted" {
+				ks.Status = "active"
+			}
 			if kc.providerType == "google" {
-				if ks.MaxLimit == 0 {
-					ks.MaxLimit = limits.GoogleFreeRequestsDay
-				}
 				ks.IsFreeTier = true
 			}
 		}

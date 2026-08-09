@@ -17,6 +17,7 @@ type KeyState struct {
 	Status            string // unchecked, active, rate_limited, day_exhausted, invalid
 	LimitRemaining    int64
 	UsageToday        int64
+	UsageDay          string
 	MaxLimit          int64
 	IsFreeTier        bool
 	RateLimitReq      int
@@ -39,6 +40,7 @@ func NewKeyState(rawKey string, dbKey *store.DBKey) *KeyState {
 		Status:             dbKey.Status,
 		LimitRemaining:     dbKey.LimitRemaining,
 		UsageToday:         dbKey.UsageToday,
+		UsageDay:           dbKey.UsageDay,
 		MaxLimit:           dbKey.MaxLimit,
 		IsFreeTier:         dbKey.IsFreeTier,
 		RateLimitReq:       dbKey.RateLimitReq,
@@ -62,6 +64,7 @@ func (ks *KeyState) ToDB() *store.DBKey {
 		Status:            ks.Status,
 		LimitRemaining:    ks.LimitRemaining,
 		UsageToday:        ks.UsageToday,
+		UsageDay:          ks.UsageDay,
 		MaxLimit:          ks.MaxLimit,
 		IsFreeTier:        ks.IsFreeTier,
 		RateLimitReq:      ks.RateLimitReq,
@@ -74,14 +77,9 @@ func (ks *KeyState) ToDB() *store.DBKey {
 
 // ResetDailyUsageIfNewDay сбрасывает usage_today при смене UTC-дня.
 func (ks *KeyState) ResetDailyUsageIfNewDay() bool {
-	if ks.LastUsedAt.IsZero() {
-		return false
-	}
-
-	y1, m1, d1 := ks.LastUsedAt.UTC().Date()
-	y2, m2, d2 := time.Now().UTC().Date()
-
-	if y1 != y2 || m1 != m2 || d1 != d2 {
+	today := time.Now().UTC().Format("2006-01-02")
+	if ks.UsageDay != today {
+		ks.UsageDay = today
 		ks.UsageToday = 0
 		if ks.Status == "day_exhausted" {
 			ks.Status = "active"
@@ -93,14 +91,18 @@ func (ks *KeyState) ResetDailyUsageIfNewDay() bool {
 
 // cleanOldRequests drops timestamps older than 1 minute. Caller holds ks.mu.
 func (ks *KeyState) cleanOldRequests(now time.Time) {
-	threshold := now.Add(-time.Minute)
+	window := time.Minute
+	if parsed, err := time.ParseDuration(ks.RateLimitInterval); err == nil && parsed > 0 {
+		window = parsed
+	}
+	threshold := now.Add(-window)
 	ks.RequestTimes = slices.DeleteFunc(ks.RequestTimes, func(t time.Time) bool {
 		return !t.After(threshold)
 	})
 }
 
-func cleanTimes(times []time.Time, now time.Time) []time.Time {
-	threshold := now.Add(-time.Minute)
+func cleanTimes(times []time.Time, now time.Time, window time.Duration) []time.Time {
+	threshold := now.Add(-window)
 	return slices.DeleteFunc(times, func(t time.Time) bool {
 		return !t.After(threshold)
 	})
@@ -188,7 +190,7 @@ func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
 	if rpm <= 0 {
 		rpm = 5
 	}
-	times := cleanTimes(ks.ModelRequestTimes[model], now)
+	times := cleanTimes(ks.ModelRequestTimes[model], now, time.Minute)
 	if len(times) >= rpm {
 		ks.ModelRequestTimes[model] = times
 		return false
@@ -196,6 +198,7 @@ func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
 	ks.ModelRequestTimes[model] = append(times, now)
 	ks.UsageToday++
 	ks.LastUsedAt = now
+	ks.UsageDay = now.UTC().Format("2006-01-02")
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
 		ks.Status = "day_exhausted"
 	} else if ks.Status == "unchecked" || ks.Status == "rate_limited" {
@@ -237,6 +240,7 @@ func (ks *KeyState) registerLocked(now time.Time) {
 		ks.LimitRemaining--
 	}
 	ks.LastUsedAt = now
+	ks.UsageDay = now.UTC().Format("2006-01-02")
 	ks.RequestTimes = append(ks.RequestTimes, now)
 
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
@@ -262,6 +266,11 @@ func (ks *KeyState) SetCooldown(duration time.Duration, status string) {
 func (ks *KeyState) SetStatus(status string) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+	ks.ResetDailyUsageIfNewDay()
+	if status == "day_exhausted" {
+		ks.markDayExhaustedLocked(time.Now())
+		return
+	}
 	ks.Status = status
 }
 
@@ -277,8 +286,20 @@ func (ks *KeyState) UpdateLimitRemaining(val int64) {
 func (ks *KeyState) MarkDayExhausted() {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
+	ks.markDayExhaustedLocked(time.Now())
+}
+
+func (ks *KeyState) markDayExhaustedLocked(now time.Time) {
+	ks.UsageDay = now.UTC().Format("2006-01-02")
 	ks.Status = "day_exhausted"
 	if ks.MaxLimit > 0 {
 		ks.UsageToday = ks.MaxLimit
 	}
+}
+
+func (ks *KeyState) Usage() int64 {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	ks.ResetDailyUsageIfNewDay()
+	return ks.UsageToday
 }

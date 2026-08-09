@@ -14,6 +14,7 @@ func newState(rateLimit int) *KeyState {
 		MaskedKey:    "m",
 		Status:       "active",
 		RateLimitReq: rateLimit,
+		UsageDay:     time.Now().UTC().Format("2006-01-02"),
 	})
 }
 
@@ -68,6 +69,7 @@ func TestTryReserveWindowRolls(t *testing.T) {
 func TestResetDailyUsageIfNewDay(t *testing.T) {
 	ks := newState(20)
 	ks.LastUsedAt = time.Now().Add(-48 * time.Hour)
+	ks.UsageDay = time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02")
 	ks.UsageToday = 50
 	ks.Status = "day_exhausted"
 
@@ -85,10 +87,28 @@ func TestResetDailyUsageIfNewDay(t *testing.T) {
 func TestResetDailyUsageUsesUTC(t *testing.T) {
 	ks := newState(20)
 	ks.LastUsedAt = time.Now().UTC().In(time.FixedZone("UTC+14", 14*3600))
+	ks.UsageDay = time.Now().UTC().Format("2006-01-02")
 	ks.UsageToday = 10
 
 	if ks.ResetDailyUsageIfNewDay() {
 		t.Fatal("same UTC day must not reset usage")
+	}
+}
+
+func TestResetDailyUsageDoesNotDependOnLastUsedAt(t *testing.T) {
+	ks := newState(20)
+	ks.UsageDay = "2000-01-01"
+	ks.UsageToday = 10
+	ks.Status = "day_exhausted"
+
+	if !ks.ResetDailyUsageIfNewDay() {
+		t.Fatal("exhausted key without local requests must reset on a new UTC day")
+	}
+	if ks.UsageToday != 0 || ks.Status != "active" {
+		t.Fatalf("usage=%d status=%s, want 0/active", ks.UsageToday, ks.Status)
+	}
+	if ks.ResetDailyUsageIfNewDay() {
+		t.Fatal("daily reset must be idempotent")
 	}
 }
 
@@ -209,6 +229,7 @@ func TestPreventiveBlockResetsOnNewDay(t *testing.T) {
 	ks.MaxLimit = 10
 	ks.UsageToday = 10
 	ks.LastUsedAt = time.Now().Add(-48 * time.Hour)
+	ks.UsageDay = time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02")
 
 	now := time.Now()
 	if !ks.CanUse(now) {

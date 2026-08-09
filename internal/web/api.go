@@ -320,7 +320,7 @@ func dailyLimits(provider string, keys []store.KeyUsageStats) dailyLimitsInfo {
 			continue
 		}
 		limit := k.Limit
-		if provider == "openrouter" {
+		if provider == "openrouter" && limit <= 0 {
 			limit = limits.OpenRouterFreeRequestsDay
 		} else if provider == "google" {
 			limit = limits.GoogleFreeRequestsDay
