@@ -72,6 +72,7 @@ func TestResetDailyUsageIfNewDay(t *testing.T) {
 	ks.UsageDay = time.Now().UTC().Add(-48 * time.Hour).Format("2006-01-02")
 	ks.UsageToday = 50
 	ks.Status = "day_exhausted"
+	ks.SetModelCooldown("m", time.Now().Add(time.Hour))
 
 	if !ks.ResetDailyUsageIfNewDay() {
 		t.Fatal("expected reset to report a day change")
@@ -81,6 +82,9 @@ func TestResetDailyUsageIfNewDay(t *testing.T) {
 	}
 	if ks.Status != "active" {
 		t.Fatalf("status not reactivated: %s", ks.Status)
+	}
+	if !ks.ModelCooldownUntil["m"].IsZero() {
+		t.Fatal("model cooldown not reset")
 	}
 }
 

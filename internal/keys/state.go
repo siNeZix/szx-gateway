@@ -81,6 +81,8 @@ func (ks *KeyState) ResetDailyUsageIfNewDay() bool {
 	if ks.UsageDay != today {
 		ks.UsageDay = today
 		ks.UsageToday = 0
+		// Model access limits from AIHubMix reset with its daily quota.
+		clear(ks.ModelCooldownUntil)
 		if ks.Status == "day_exhausted" {
 			ks.Status = "active"
 		}

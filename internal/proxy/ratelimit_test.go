@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"testing"
+	"time"
 )
 
 func TestIsUpstreamRateLimit(t *testing.T) {
@@ -47,6 +48,8 @@ func TestClassifyAIHubMixError(t *testing.T) {
 		{"bad model", 503, `{"error":{"message":"Incorrect model ID. Please request to view the model page or you do not have permission to use this model"}}`, aihubmixReturnToClient},
 		{"invalid token", 401, `{"error":{"message":"Unauthorized – access token is invalid or expired."}}`, aihubmixRetryInvalidKey},
 		{"disabled key", 403, `{"error":{"message":"key is disabled"}}`, aihubmixRetryInvalidKey},
+		{"empty 401 is temporary", 401, ``, aihubmixRetryTransient},
+		{"unknown 403 is temporary", 403, `{"error":{"message":"access denied"}}`, aihubmixRetryTransient},
 		{"quota", 403, `{"error":{"code":"insufficient_user_quota","message":"Your account balance is insufficient. Please recharge your account."}}`, aihubmixRetryAccountLimit},
 		{"numeric quota code", 429, `{"error":{"code":429,"message":"Account rate limit exceeded"}}`, aihubmixRetryKeyRateLimit},
 		{"key model", 403, `{"error":{"message":"Forbidden – key abc123 not authorized to access the requested model."}}`, aihubmixRetryKeyModelLimit},
@@ -58,6 +61,16 @@ func TestClassifyAIHubMixError(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNextUTCMidnight(t *testing.T) {
+	until := nextUTCMidnight()
+	if until.Location() != time.UTC || !until.After(time.Now()) {
+		t.Fatalf("nextUTCMidnight() = %v, want future UTC time", until)
+	}
+	if until.Hour() != 0 || until.Minute() != 0 || until.Second() != 0 || until.Nanosecond() != 0 {
+		t.Fatalf("nextUTCMidnight() = %v, want UTC midnight", until)
 	}
 }
 

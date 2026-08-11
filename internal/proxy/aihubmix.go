@@ -331,7 +331,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 				resp.Body.Close()
 				log.Printf("[AIHubMix] key %s cannot use model %s (status %d), trying next key", keyState.MaskedKey, modelForLimits, resp.StatusCode)
 				if modelForLimits != "" {
-					keyState.SetModelCooldown(modelForLimits, time.Now().Add(24*time.Hour))
+					keyState.SetModelCooldown(modelForLimits, nextUTCMidnight())
 				}
 				h.pool.SyncKeyToDB(keyState)
 				finalErr = fmt.Errorf("key/model limit with status %d", resp.StatusCode)
@@ -549,10 +549,7 @@ func containsAnyLower(data []byte, markers []string) bool {
 }
 
 func isKeyDead(status int, data []byte) bool {
-	if containsAnyLower(data, aihubmixInvalidKeyMarkers) {
-		return true
-	}
-	return status == 401 && len(data) == 0
+	return containsAnyLower(data, aihubmixInvalidKeyMarkers)
 }
 
 func classifyAIHubMixError(status int, data []byte) aihubmixErrorAction {
@@ -600,12 +597,19 @@ func classifyAIHubMixError(status int, data []byte) aihubmixErrorAction {
 		return aihubmixReturnToClient
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return aihubmixRetryInvalidKey
+		// AIHubMix also returns 401/403 for temporary account and routing issues.
+		// Only explicit invalid-key markers may permanently remove a key.
+		return aihubmixRetryTransient
 	}
 	if status >= 500 {
 		return aihubmixRetryTransient
 	}
 	return aihubmixReturnToClient
+}
+
+func nextUTCMidnight() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 }
 
 func copyHeaders(dst, src http.Header) {
