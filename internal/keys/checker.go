@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
@@ -98,7 +99,7 @@ func (kc *KeyChecker) runLoop() {
 		go func(workerID int) {
 			defer workerWg.Done()
 			for ks := range taskChan {
-				kc.CheckKey(ks)
+				kc.CheckKey(context.Background(), ks)
 			}
 		}(i)
 	}
@@ -164,8 +165,8 @@ func (kc *KeyChecker) findKeyToVerify() *KeyState {
 	return bestCandidate
 }
 
-func (kc *KeyChecker) CheckKey(ks *KeyState) {
-	req, err := http.NewRequest("GET", kc.checkURL, nil)
+func (kc *KeyChecker) CheckKey(ctx context.Context, ks *KeyState) {
+	req, err := http.NewRequestWithContext(ctx, "GET", kc.checkURL, nil)
 	if err != nil {
 		log.Printf("Failed to create verification request: %v", err)
 		return
@@ -189,6 +190,9 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 	settings, _ := kc.store.GetProxySettings(kc.providerType)
 	resp, err := kc.do(req, settings, false)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		log.Printf("Network error verifying key %s: %v", masked, err)
 		ks.SetCooldown(1*time.Minute, "")
 		return
@@ -197,6 +201,9 @@ func (kc *KeyChecker) CheckKey(ks *KeyState) {
 		resp.Body.Close()
 		resp, err = kc.do(req, settings, true)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			log.Printf("Proxy retry error verifying key %s: %v", masked, err)
 			ks.SetCooldown(1*time.Minute, "")
 			return

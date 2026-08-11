@@ -161,6 +161,20 @@ export interface ProxyUsageBucket {
   errors: number
 }
 
+export interface ServiceCheckJob {
+  running: boolean
+  mode: 'keys' | 'limits' | ''
+  total: number
+  completed: number
+  active: number
+  invalid: number
+  day_exhausted: number
+  rate_limited: number
+  errors: number
+  started_at: string
+  finished_at: string
+}
+
 export interface ModelCheckHour {
   hour: string
   percent: number

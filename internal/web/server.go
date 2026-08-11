@@ -26,18 +26,20 @@ type WebServer struct {
 	rankingMgr   *models.RankingManager
 	modelChecker *models.ModelChecker
 	pools        map[string]*keys.KeyPool
+	keyChecks    *keys.CheckService
 	proxies      *proxies.Pool
 	sessions     map[string]time.Time
 	sessionsMu   sync.Mutex
 }
 
-func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, modelChecker *models.ModelChecker, pools map[string]*keys.KeyPool, proxyPool *proxies.Pool) *WebServer {
+func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, modelChecker *models.ModelChecker, pools map[string]*keys.KeyPool, keyChecks *keys.CheckService, proxyPool *proxies.Pool) *WebServer {
 	return &WebServer{
 		cfg:          cfg,
 		store:        s,
 		rankingMgr:   rm,
 		modelChecker: modelChecker,
 		pools:        pools,
+		keyChecks:    keyChecks,
 		proxies:      proxyPool,
 		sessions:     make(map[string]time.Time),
 	}

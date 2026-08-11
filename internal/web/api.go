@@ -76,6 +76,60 @@ func (ws *WebServer) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v2/model-checks/config", ws.requireAuth(ws.apiModelCheckConfig))
 	mux.HandleFunc("/api/v2/model-checks/order", ws.requireAuth(ws.apiModelCheckOrder))
 	mux.HandleFunc("/api/v2/model-checks/test", ws.requireAuth(ws.apiModelCheckTest))
+	mux.HandleFunc("/api/v2/service/checks", ws.requireAuth(ws.apiServiceChecks))
+	mux.HandleFunc("/api/v2/service/checks/cancel", ws.requireAuth(ws.apiServiceChecksCancel))
+}
+
+func (ws *WebServer) apiServiceChecks(w http.ResponseWriter, r *http.Request) {
+	if ws.keyChecks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "key checks unavailable")
+		return
+	}
+	if r.Method == http.MethodGet {
+		if provider, _ := providerFromRequest(r); provider != "aihubmix" {
+			writeAPIError(w, http.StatusBadRequest, "service is only available for aihubmix")
+			return
+		}
+		writeJSON(w, http.StatusOK, ws.keyChecks.Snapshot())
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Provider string `json:"provider"`
+		Mode     string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Provider != "aihubmix" || (body.Mode != "keys" && body.Mode != "limits") {
+		writeAPIError(w, http.StatusBadRequest, "invalid service check")
+		return
+	}
+	job, started := ws.keyChecks.Start(body.Mode)
+	if !started {
+		writeAPIError(w, http.StatusConflict, "a key check is already running")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (ws *WebServer) apiServiceChecksCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if ws.keyChecks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "key checks unavailable")
+		return
+	}
+	var body struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Provider != "aihubmix" {
+		writeAPIError(w, http.StatusBadRequest, "invalid service check")
+		return
+	}
+	writeJSON(w, http.StatusOK, ws.keyChecks.Cancel())
 }
 
 func (ws *WebServer) apiAuthCheck(w http.ResponseWriter, r *http.Request) {

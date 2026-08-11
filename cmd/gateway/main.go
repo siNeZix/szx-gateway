@@ -136,7 +136,14 @@ func main() {
 		"aihubmix":   "http://127.0.0.1" + cfg.AIHubMixListenAddr,
 		"google":     "http://127.0.0.1" + cfg.GoogleListenAddr,
 	})
-	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, modelChecker, pools, proxyPool)
+	keyChecks := keys.NewCheckService(aihubmixPool, aihubmixChecker, func() string {
+		free := rankingMgr.GetAihubmixFreeModels()
+		if len(free) == 0 {
+			return ""
+		}
+		return free[0].ID
+	})
+	webServer := web.NewWebServer(cfg, dbStore, rankingMgr, modelChecker, pools, keyChecks, proxyPool)
 
 	// OpenRouter mux: /v1/* → OpenRouter proxy, / → admin
 	orMux := http.NewServeMux()

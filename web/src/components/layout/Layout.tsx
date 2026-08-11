@@ -9,6 +9,7 @@ const navItems = [
   { to: '/models', label: 'Модели' },
 	{ to: '/status', label: 'Статус' },
   { to: '/proxies', label: 'Прокси' },
+  { to: '/service', label: 'Сервис' },
 ]
 
 function ProviderSwitcher() {
@@ -38,9 +39,10 @@ function ProviderSwitcher() {
 }
 
 function ProviderNav() {
+  const { provider } = useProvider()
   return (
     <nav className="flex gap-1">
-      {navItems.map((item) => (
+      {navItems.filter((item) => item.to !== '/service' || provider === 'aihubmix').map((item) => (
         <NavLink
           key={item.to}
           to={item.to}

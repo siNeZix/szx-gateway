@@ -10,7 +10,7 @@ import (
 )
 
 func TestAuthSessionFlow(t *testing.T) {
-	ws := NewWebServer(&config.Config{WebUsername: "admin", WebPassword: "secret"}, nil, nil, nil, nil, nil)
+	ws := NewWebServer(&config.Config{WebUsername: "admin", WebPassword: "secret"}, nil, nil, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	ws.registerAPIRoutes(mux)
 

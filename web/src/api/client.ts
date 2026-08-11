@@ -12,6 +12,7 @@ import type {
   ProxyStats,
   ProxyUsageBucket,
   RequestLogItem,
+  ServiceCheckJob,
   StatsSnapshot,
   UsageBucket,
 } from '../types'
@@ -133,6 +134,14 @@ export const api = {
       hashes,
       action,
     }),
+
+  serviceCheck: () => getJSON<ServiceCheckJob>('/api/v2/service/checks?provider=aihubmix'),
+
+  startServiceCheck: (mode: 'keys' | 'limits') =>
+    postJSON<ServiceCheckJob>('/api/v2/service/checks', { provider: 'aihubmix', mode }),
+
+  cancelServiceCheck: () =>
+    postJSON<ServiceCheckJob>('/api/v2/service/checks/cancel', { provider: 'aihubmix' }),
 
   proxies: () => getJSON<ProxyItem[]>('/api/v2/proxies'),
 

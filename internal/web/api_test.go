@@ -91,7 +91,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// RankingManager не стартуем — нужен только как zero-value для API.
 	rm := models.NewRankingManager(s, 0)
 
-	ws := web.NewWebServer(cfg, s, rm, nil, pools, proxies.NewPool(s))
+	ws := web.NewWebServer(cfg, s, rm, nil, pools, nil, proxies.NewPool(s))
 	mux := http.NewServeMux()
 	ws.Start(mux)
 
@@ -283,6 +283,16 @@ func TestAPI_ErrorCases(t *testing.T) {
 	})
 	if env.Error == "" {
 		t.Errorf("expected error for unknown provider")
+	}
+}
+
+func TestAPI_ServiceChecksUnavailable(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	env := doJSON(t, srv, "GET", "/api/v2/service/checks?provider=aihubmix", nil)
+	if env.Error != "key checks unavailable" {
+		t.Fatalf("service checks error = %q, want unavailable", env.Error)
 	}
 }
 

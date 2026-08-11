@@ -10,6 +10,7 @@ import Models from './pages/Models'
 import Proxies from './pages/Proxies'
 import Status from './pages/Status'
 import Login from './pages/Login'
+import Service from './pages/Service'
 import { api } from './api/client'
 
 export default function App() {
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/models" element={<Models />} />
 			<Route path="/status" element={<Status />} />
             <Route path="/proxies" element={<Proxies />} />
+            <Route path="/service" element={<Service />} />
           </Route>
         </Routes>
       </BrowserRouter>
