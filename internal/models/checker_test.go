@@ -12,9 +12,9 @@ import (
 
 func TestModelChecker_CheckUsesOnlyContent(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		response string
-		success bool
+		success  bool
 	}{
 		{
 			name:     "long content succeeds",
