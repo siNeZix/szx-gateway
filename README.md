@@ -72,7 +72,7 @@ DB_MAX_IDLE_CONNS=5
 make migrate-sqlite-to-mysql SQLITE_PATH=/data/gateway.db DB_DSN='szx_gateway:change-me@tcp(mysql-host:3306)/szx_gateway?parseTime=true&loc=UTC&charset=utf8mb4'
 ```
 
-Команда переносит все данные, включая ключи и логи. Не запускайте её повторно в непустую MySQL-базу. У `DB_DSN` должны быть `parseTime=true`, `loc=UTC`, `charset=utf8mb4`.
+Команда переносит все данные, включая ключи и логи. Повторный запуск безопасен: данные каждой таблицы заменяются одной транзакцией. У `DB_DSN` должны быть `parseTime=true`, `loc=UTC`, `charset=utf8mb4`.
 
 Флаги:
 

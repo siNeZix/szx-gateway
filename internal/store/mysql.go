@@ -57,8 +57,7 @@ func (s *Store) migrateMySQL() error {
 			return fmt.Errorf("mysql migration query failed: %w", err)
 		}
 	}
-	_, err := s.db.Exec(`INSERT INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google') ON DUPLICATE KEY UPDATE provider = VALUES(provider)`)
-	return err
+	return nil
 }
 
 func (s *Store) reserveModelUsageMySQL(provider, keyHash, model, day string, now time.Time, limit int64) (bool, error) {
