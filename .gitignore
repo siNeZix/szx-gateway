@@ -7,6 +7,9 @@
 *.dylib
 /gateway
 
+# Runtime logs
+/logs/
+
 # Databases
 *.db
 *.db-journal

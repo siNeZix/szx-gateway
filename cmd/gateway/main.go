@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"szx-gateway/internal/config"
 	"szx-gateway/internal/keys"
+	"szx-gateway/internal/logging"
 	"szx-gateway/internal/models"
 	"szx-gateway/internal/proxies"
 	"szx-gateway/internal/proxy"
@@ -19,9 +21,16 @@ import (
 )
 
 func main() {
-	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix + Google)...")
-
 	cfg := config.Load()
+	logWriter, err := logging.NewRotatingWriter(cfg.LogDir, int64(cfg.LogMaxSizeMB)*1024*1024, cfg.LogMaxBackups)
+	if err != nil {
+		log.Fatalf("Log initialization failed: %v", err)
+	}
+	defer logWriter.Close()
+	log.SetOutput(io.MultiWriter(os.Stdout, logWriter))
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
+
+	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix + Google)...")
 	log.Printf("OpenRouter on %s, AIHubMix on %s, Google on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr, cfg.GoogleListenAddr)
 
 	dbStore, err := store.Open(cfg.DBDriver, cfg.DbPath, cfg.DBDSN, cfg.DBMaxOpenConns, cfg.DBMaxIdleConns)

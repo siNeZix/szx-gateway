@@ -28,6 +28,9 @@ type Config struct {
 	FirewallEnabled      bool
 	FirewallBlock        bool
 	FirewallRedact       bool
+	LogDir               string
+	LogMaxSizeMB         int
+	LogMaxBackups        int
 }
 
 func Load() *Config {
@@ -58,6 +61,9 @@ func Load() *Config {
 	flag.BoolVar(&cfg.FirewallEnabled, "firewall", getEnvBool("FIREWALL_ENABLED", false), "Enable firewall (scan requests/responses for secrets, injection, dangerous commands)")
 	flag.BoolVar(&cfg.FirewallBlock, "firewall-block", getEnvBool("FIREWALL_BLOCK", true), "Block malicious content (false = log only)")
 	flag.BoolVar(&cfg.FirewallRedact, "firewall-redact", getEnvBool("FIREWALL_REDACT", true), "Redact secrets in response instead of blocking")
+	flag.StringVar(&cfg.LogDir, "log-dir", getEnv("LOG_DIR", "./logs"), "Directory for application logs")
+	flag.IntVar(&cfg.LogMaxSizeMB, "log-max-size-mb", getEnvInt("LOG_MAX_SIZE_MB", 100), "Maximum size of one log file in MiB")
+	flag.IntVar(&cfg.LogMaxBackups, "log-max-backups", getEnvInt("LOG_MAX_BACKUPS", 10), "Number of rotated log files to retain")
 
 	flag.Parse()
 
