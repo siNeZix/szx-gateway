@@ -2,13 +2,18 @@ package config
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"time"
 )
 
 type Config struct {
 	GatewayToken         string
+	DBDriver             string
+	DBDSN                string
 	DbPath               string
+	DBMaxOpenConns       int
+	DBMaxIdleConns       int
 	ListenAddr           string
 	AIHubMixListenAddr   string
 	GoogleListenAddr     string
@@ -29,7 +34,11 @@ func Load() *Config {
 	cfg := &Config{}
 
 	flag.StringVar(&cfg.GatewayToken, "token", getEnv("GATEWAY_TOKEN", "super-secret-gateway-token"), "Bearer token required to use the gateway")
+	flag.StringVar(&cfg.DBDriver, "db-driver", getEnv("DB_DRIVER", "sqlite"), "Database driver: sqlite or mysql")
+	flag.StringVar(&cfg.DBDSN, "db-dsn", getEnv("DB_DSN", ""), "Database DSN (required for mysql)")
 	flag.StringVar(&cfg.DbPath, "db-path", getEnv("DB_PATH", "gateway.db"), "Path to the SQLite database")
+	flag.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", getEnvInt("DB_MAX_OPEN_CONNS", 10), "Maximum open database connections (MySQL)")
+	flag.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", getEnvInt("DB_MAX_IDLE_CONNS", 5), "Maximum idle database connections (MySQL)")
 	flag.StringVar(&cfg.ListenAddr, "listen", getEnv("LISTEN_ADDR", ":8080"), "Listen address for the gateway server")
 	flag.StringVar(&cfg.AIHubMixListenAddr, "aihubmix-listen", getEnv("AIHUBMIX_LISTEN_ADDR", ":8081"), "Listen address for the AIHubMix proxy server")
 	flag.StringVar(&cfg.GoogleListenAddr, "google-listen", getEnv("GOOGLE_LISTEN_ADDR", ":8082"), "Listen address for the Google AI Studio proxy server")
@@ -81,6 +90,16 @@ func getEnv(key, fallback string) string {
 func getEnvBool(key string, fallback bool) bool {
 	if val, ok := os.LookupEnv(key); ok {
 		return val == "true" || val == "1"
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if val, ok := os.LookupEnv(key); ok {
+		var parsed int
+		if _, err := fmt.Sscanf(val, "%d", &parsed); err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }

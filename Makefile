@@ -1,8 +1,9 @@
-.PHONY: build run dev clean fmt tidy
+.PHONY: build run dev clean fmt tidy migrate-sqlite-to-mysql
 
 BUILD_DIR=build
 BINARY_NAME=gateway.exe
 BINARY_PATH=$(BUILD_DIR)/$(BINARY_NAME)
+SQLITE_PATH?=gateway.db
 
 build:
 	if not exist $(BUILD_DIR) mkdir $(BUILD_DIR)
@@ -23,3 +24,6 @@ fmt:
 
 tidy:
 	go mod tidy
+
+migrate-sqlite-to-mysql:
+	go run ./cmd/migrate-sqlite-to-mysql -sqlite "$(SQLITE_PATH)" -mysql "$(DB_DSN)"

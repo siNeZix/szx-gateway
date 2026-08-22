@@ -24,12 +24,12 @@ func main() {
 	cfg := config.Load()
 	log.Printf("OpenRouter on %s, AIHubMix on %s, Google on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr, cfg.GoogleListenAddr)
 
-	dbStore, err := store.New(cfg.DbPath)
+	dbStore, err := store.Open(cfg.DBDriver, cfg.DbPath, cfg.DBDSN, cfg.DBMaxOpenConns, cfg.DBMaxIdleConns)
 	if err != nil {
 		log.Fatalf("Database initialization failed: %v", err)
 	}
 	defer dbStore.Close()
-	log.Printf("SQLite database initialized at %s", cfg.DbPath)
+	log.Printf("%s database initialized", cfg.DBDriver)
 
 	openRouterPool, err := keys.NewKeyPool(dbStore, "openrouter")
 	if err != nil {

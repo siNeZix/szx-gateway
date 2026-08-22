@@ -5,14 +5,17 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"szx-gateway/internal/limits"
 	"time"
 
+	"szx-gateway/internal/limits"
+
+	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	driver string
 }
 
 type DBKey struct {
@@ -200,15 +203,41 @@ func MaskKey(key string) string {
 }
 
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	return Open("sqlite", dbPath, "", 1, 1)
+}
+
+func Open(driver, sqlitePath, mysqlDSN string, maxOpenConns, maxIdleConns int) (*Store, error) {
+	if driver == "" {
+		driver = "sqlite"
+	}
+	if driver != "sqlite" && driver != "mysql" {
+		return nil, fmt.Errorf("unsupported database driver %q", driver)
+	}
+	dsn := sqlitePath
+	if driver == "mysql" {
+		if mysqlDSN == "" {
+			return nil, fmt.Errorf("DB_DSN is required for mysql")
+		}
+		dsn = mysqlDSN
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+		return nil, fmt.Errorf("failed to open %s database: %w", driver, err)
+	}
+	if driver == "sqlite" {
+		db.SetMaxOpenConns(1)
+	} else {
+		if maxOpenConns <= 0 {
+			maxOpenConns = 10
+		}
+		if maxIdleConns < 0 || maxIdleConns > maxOpenConns {
+			maxIdleConns = maxOpenConns
+		}
+		db.SetMaxOpenConns(maxOpenConns)
+		db.SetMaxIdleConns(maxIdleConns)
 	}
 
-	// Optimize SQLite performance for concurrent usage
-	db.SetMaxOpenConns(1) // SQLite is single-writer anyway, modernc does best with 1 open conn or WAL mode
-
-	s := &Store{db: db}
+	s := &Store{db: db, driver: driver}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to run database migrations: %w", err)
@@ -247,8 +276,13 @@ func (s *Store) getModelCheckConfigs(query string) ([]ModelCheckConfig, error) {
 }
 
 func (s *Store) SaveModelCheckConfig(config ModelCheckConfig) error {
-	_, err := s.db.Exec(`INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, ?, ?)
-		ON CONFLICT(provider, model) DO UPDATE SET enabled = excluded.enabled, position = excluded.position`, config.Provider, config.Model, config.Enabled, config.Position)
+	query := `INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, ?, ?)
+		ON CONFLICT(provider, model) DO UPDATE SET enabled = excluded.enabled, position = excluded.position`
+	if s.driver == "mysql" {
+		query = `INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), position = VALUES(position)`
+	}
+	_, err := s.db.Exec(query, config.Provider, config.Model, config.Enabled, config.Position)
 	return err
 }
 
@@ -259,8 +293,13 @@ func (s *Store) SaveModelCheckOrder(provider string, models []string) error {
 	}
 	defer tx.Rollback()
 	for position, model := range models {
-		if _, err := tx.Exec(`INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, 0, ?)
-			ON CONFLICT(provider, model) DO UPDATE SET position = excluded.position`, provider, model, position); err != nil {
+		query := `INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, 0, ?)
+			ON CONFLICT(provider, model) DO UPDATE SET position = excluded.position`
+		if s.driver == "mysql" {
+			query = `INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, 0, ?)
+				ON DUPLICATE KEY UPDATE position = VALUES(position)`
+		}
+		if _, err := tx.Exec(query, provider, model, position); err != nil {
 			return err
 		}
 	}
@@ -299,10 +338,13 @@ func (s *Store) GetModelCheckResults(provider, model string, since time.Time) ([
 }
 
 func (s *Store) migrate() error {
+	if s.driver == "mysql" {
+		return s.migrateMySQL()
+	}
 	queries := []string{
 		`PRAGMA journal_mode=WAL;`,
 		`PRAGMA synchronous=NORMAL;`,
-		`CREATE TABLE IF NOT EXISTS keys (
+		`CREATE TABLE IF NOT EXISTS ` + "`keys`" + ` (
 			key_hash TEXT PRIMARY KEY,
 			masked_key TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -340,7 +382,7 @@ func (s *Store) migrate() error {
 			source TEXT NOT NULL,
 			limit_total INTEGER,
 			limit_remaining INTEGER,
-			usage INTEGER,
+			` + "`usage`" + ` INTEGER,
 			rate_limit_req INTEGER,
 			rate_limit_interval TEXT,
 			reset_raw TEXT
@@ -350,7 +392,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS models_cache (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
-			rank INTEGER NOT NULL,
+			` + "`rank`" + ` INTEGER NOT NULL,
 			context_length INTEGER NOT NULL,
 			updated_at DATETIME NOT NULL
 		);`,
@@ -467,8 +509,8 @@ func (s *Store) migrate() error {
 
 	// Migration for databases created before raw_key/ttft_ms/is_stream/provider existed in the CREATE above.
 	// On fresh DBs the columns already exist, so these errors are ignored.
-	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN raw_key TEXT NOT NULL DEFAULT '';`)
-	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN raw_key TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN is_stream INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'openrouter';`)
@@ -487,23 +529,23 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN input_price REAL NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN output_price REAL NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE aihubmix_free_models_cache ADD COLUMN description TEXT NOT NULL DEFAULT '';`)
-	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_keys_provider ON keys(provider);`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_keys_provider ON ` + "`keys`" + `(provider);`)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN latency_sum_ms INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN errors INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN freeze_count INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN frozen_until TEXT NOT NULL DEFAULT '';`)
-	_, _ = s.db.Exec(`ALTER TABLE keys ADD COLUMN usage_day TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN usage_day TEXT NOT NULL DEFAULT '';`)
 	// ponytail: 10 запросов/аккаунт/сутки — подтверждённый лимит AIHubMix.
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
-	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
+	_, _ = s.db.Exec(`UPDATE ` + "`keys`" + ` SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
 	// Google quotas differ by model and live in model_usage, not in keys.max_limit.
-	_, _ = s.db.Exec(`UPDATE keys SET max_limit = 0 WHERE provider = 'google';`)
+	_, _ = s.db.Exec(`UPDATE ` + "`keys`" + ` SET max_limit = 0 WHERE provider = 'google';`)
 	// usage_day is the sole marker for UTC daily quotas. This also repairs legacy rows
 	// that predate the column without incorrectly unblocking keys during the same day.
 	today := UTCDay(time.Now())
-	_, _ = s.db.Exec(`UPDATE keys SET usage_day = substr(last_used_at, 1, 10) WHERE usage_day = '' AND substr(last_used_at, 1, 10) = ?`, today)
-	_, _ = s.db.Exec(`UPDATE keys SET usage_today = 0, usage_day = ?, status = CASE WHEN status = 'day_exhausted' THEN 'active' ELSE status END WHERE usage_day <> ?`, today, today)
+	_, _ = s.db.Exec(`UPDATE `+"`keys`"+` SET usage_day = substr(last_used_at, 1, 10) WHERE usage_day = '' AND substr(last_used_at, 1, 10) = ?`, today)
+	_, _ = s.db.Exec(`UPDATE `+"`keys`"+` SET usage_today = 0, usage_day = ?, status = CASE WHEN status = 'day_exhausted' THEN 'active' ELSE status END WHERE usage_day <> ?`, today, today)
 	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google');`)
 
 	return nil
@@ -511,10 +553,16 @@ func (s *Store) migrate() error {
 
 func (s *Store) AddProxy(p DBProxy) (bool, error) {
 	now := time.Now().UTC()
-	res, err := s.db.Exec(`
+	query := `
 		INSERT OR IGNORE INTO proxies (raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, p.Raw, p.Scheme, p.Host, p.Port, p.Username, p.Password, p.Status, p.LastCheckedAt.UTC(), p.LastError, now)
+	`
+	if s.driver == "mysql" {
+		query = `INSERT INTO proxies (raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE id = id`
+	}
+	res, err := s.db.Exec(query, p.Raw, p.Scheme, p.Host, p.Port, p.Username, p.Password, p.Status, p.LastCheckedAt.UTC(), p.LastError, now)
 	if err != nil {
 		return false, err
 	}
@@ -623,14 +671,20 @@ func (s *Store) SaveProxySettings(ps ProxySettings) error {
 	if ps.Mode != "always" && ps.Mode != "after_429" {
 		ps.Mode = "after_429"
 	}
-	_, err := s.db.Exec(`
+	query := `
 		INSERT INTO proxy_settings (provider, use_for_checker, use_for_requests, mode)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(provider) DO UPDATE SET
 			use_for_checker = excluded.use_for_checker,
 			use_for_requests = excluded.use_for_requests,
 			mode = excluded.mode
-	`, ps.Provider, checker, requests, ps.Mode)
+	`
+	if s.driver == "mysql" {
+		query = `INSERT INTO proxy_settings (provider, use_for_checker, use_for_requests, mode)
+			VALUES (?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE use_for_checker = VALUES(use_for_checker), use_for_requests = VALUES(use_for_requests), mode = VALUES(mode)`
+	}
+	_, err := s.db.Exec(query, ps.Provider, checker, requests, ps.Mode)
 	return err
 }
 
@@ -781,7 +835,7 @@ func (s *Store) GetModelUsage(provider, keyHash, model string, now time.Time) (M
 }
 
 func (s *Store) AddModelUsage(provider, keyHash, model string, now time.Time, requests, tokens, latencySumMs int64, errors int) error {
-	_, err := s.db.Exec(`
+	query := `
 		INSERT INTO model_usage (provider, key_hash, model, day, requests, tokens, latency_sum_ms, errors, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
@@ -790,18 +844,30 @@ func (s *Store) AddModelUsage(provider, keyHash, model string, now time.Time, re
 			latency_sum_ms = latency_sum_ms + excluded.latency_sum_ms,
 			errors = errors + excluded.errors,
 			updated_at = excluded.updated_at
-	`, provider, keyHash, model, UTCDay(now), requests, tokens, latencySumMs, errors, now.UTC())
+	`
+	if s.driver == "mysql" {
+		query = `INSERT INTO model_usage (provider, key_hash, model, day, requests, tokens, latency_sum_ms, errors, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE requests = requests + VALUES(requests), tokens = tokens + VALUES(tokens), latency_sum_ms = latency_sum_ms + VALUES(latency_sum_ms), errors = errors + VALUES(errors), updated_at = VALUES(updated_at)`
+	}
+	_, err := s.db.Exec(query, provider, keyHash, model, UTCDay(now), requests, tokens, latencySumMs, errors, now.UTC())
 	return err
 }
 
 func (s *Store) MarkModelExhausted(provider, keyHash, model string, now time.Time) error {
-	_, err := s.db.Exec(`
+	query := `
 		INSERT INTO model_usage (provider, key_hash, model, day, exhausted, updated_at)
 		VALUES (?, ?, ?, ?, 1, ?)
 		ON CONFLICT(provider, key_hash, model, day) DO UPDATE SET
 			exhausted = 1,
 			updated_at = excluded.updated_at
-	`, provider, keyHash, model, UTCDay(now), now.UTC())
+	`
+	if s.driver == "mysql" {
+		query = `INSERT INTO model_usage (provider, key_hash, model, day, exhausted, updated_at)
+			VALUES (?, ?, ?, ?, 1, ?)
+			ON DUPLICATE KEY UPDATE exhausted = 1, updated_at = VALUES(updated_at)`
+	}
+	_, err := s.db.Exec(query, provider, keyHash, model, UTCDay(now), now.UTC())
 	return err
 }
 
@@ -811,6 +877,9 @@ func (s *Store) ReserveModelUsage(provider, keyHash, model string, now time.Time
 		return true, nil
 	}
 	day := UTCDay(now)
+	if s.driver == "mysql" {
+		return s.reserveModelUsageMySQL(provider, keyHash, model, day, now, limit)
+	}
 	res, err := s.db.Exec(`
 		INSERT INTO model_usage (provider, key_hash, model, day, requests, updated_at)
 		VALUES (?, ?, ?, ?, 1, ?)
@@ -834,6 +903,9 @@ func (s *Store) RollbackModelUsage(provider, keyHash, model string, now time.Tim
 // FreezeModel замораживает модель ключа: 1-я ошибка → 1 мин, 2-я → до конца UTC-дня.
 // Возвращает длительность заморозки.
 func (s *Store) FreezeModel(provider, keyHash, model string, now time.Time) (time.Duration, error) {
+	if s.driver == "mysql" {
+		return s.freezeModelMySQL(provider, keyHash, model, now)
+	}
 	day := UTCDay(now)
 	var freezeCount int
 	err := s.db.QueryRow(`SELECT freeze_count FROM model_usage WHERE provider=? AND key_hash=? AND model=? AND day=?`, provider, keyHash, model, day).Scan(&freezeCount)
@@ -1029,17 +1101,22 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 		maxLimit = limits.AIHubMixFreeRequestsDay
 	}
 
-	existsStmt, err := tx.Prepare(`SELECT 1 FROM keys WHERE key_hash = ?`)
+	existsStmt, err := tx.Prepare(`SELECT 1 FROM ` + "`keys`" + ` WHERE key_hash = ?`)
 	if err != nil {
 		return 0, err
 	}
 	defer existsStmt.Close()
 
-	stmt, err := tx.Prepare(`
-		INSERT INTO keys (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit, usage_day)
+	query := `
+		INSERT INTO ` + "`keys`" + ` (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit, usage_day)
 		VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider, max_limit=excluded.max_limit;
-	`)
+		ON CONFLICT(key_hash) DO UPDATE SET masked_key=excluded.masked_key, raw_key=excluded.raw_key, provider=excluded.provider, max_limit=excluded.max_limit;`
+	if s.driver == "mysql" {
+		query = `INSERT INTO ` + "`keys`" + ` (key_hash, masked_key, status, cooldown_until, last_checked_at, last_used_at, raw_key, provider, max_limit, usage_day)
+			VALUES (?, ?, 'unchecked', ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE masked_key=VALUES(masked_key), raw_key=VALUES(raw_key), provider=VALUES(provider), max_limit=VALUES(max_limit)`
+	}
+	stmt, err := tx.Prepare(query)
 	if err != nil {
 		return 0, err
 	}
@@ -1070,7 +1147,7 @@ func (s *Store) AddKeys(keys []string, provider string) (int, error) {
 }
 
 func (s *Store) DeleteKey(hash string) error {
-	_, err := s.db.Exec("DELETE FROM keys WHERE key_hash = ?", hash)
+	_, err := s.db.Exec("DELETE FROM `keys` WHERE key_hash = ?", hash)
 	return err
 }
 
@@ -1084,7 +1161,7 @@ func (s *Store) DeleteKeys(hashes []string, provider string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("DELETE FROM keys WHERE key_hash = ? AND provider = ?")
+	stmt, err := tx.Prepare("DELETE FROM `keys` WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
@@ -1108,7 +1185,7 @@ func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare("UPDATE keys SET status = ? WHERE key_hash = ? AND provider = ?")
+	stmt, err := tx.Prepare("UPDATE `keys` SET status = ? WHERE key_hash = ? AND provider = ?")
 	if err != nil {
 		return err
 	}
@@ -1124,7 +1201,7 @@ func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error
 
 func (s *Store) UpdateKey(k *DBKey, provider string) error {
 	_, err := s.db.Exec(`
-		UPDATE keys SET
+		UPDATE `+"`keys`"+` SET
 			status = ?,
 			limit_remaining = ?,
 			usage_today = ?,
@@ -1148,7 +1225,7 @@ func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 		SELECT key_hash, masked_key, status, limit_remaining, usage_today, usage_day, max_limit,
 		       is_free_tier, rate_limit_req, rate_limit_interval, cooldown_until, 
 		       last_checked_at, last_used_at, raw_key
-		FROM keys
+		FROM `+"`keys`"+`
 		WHERE provider = ?
 	`, provider)
 	if err != nil {
@@ -1235,7 +1312,7 @@ func (s *Store) ClearRequestLog(provider string) (int64, error) {
 // ponytail: raw logs are written forever. Purging logic can be added when DB size is a concern.
 func (s *Store) LogRateLimit(rl *DBRateLimit) error {
 	_, err := s.db.Exec(`
-		INSERT INTO rate_limits_log (timestamp, key_hash, source, limit_total, limit_remaining, usage, rate_limit_req, rate_limit_interval, reset_raw)
+		INSERT INTO rate_limits_log (timestamp, key_hash, source, limit_total, limit_remaining, `+"`usage`"+`, rate_limit_req, rate_limit_interval, reset_raw)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, rl.Timestamp, rl.KeyHash, rl.Source, rl.LimitTotal, rl.LimitRemaining, rl.Usage, rl.RateLimitReq, rl.RateLimitInterval, rl.ResetRaw)
 	return err
@@ -1254,7 +1331,7 @@ func (s *Store) CacheModels(models []DBModel) error {
 	}
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO models_cache (id, name, rank, context_length, updated_at)
+		INSERT INTO models_cache (id, name, ` + "`rank`" + `, context_length, updated_at)
 		VALUES (?, ?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -1273,7 +1350,7 @@ func (s *Store) CacheModels(models []DBModel) error {
 }
 
 func (s *Store) GetCachedModels() ([]DBModel, error) {
-	rows, err := s.db.Query(`SELECT id, name, rank, context_length, updated_at FROM models_cache ORDER BY rank ASC`)
+	rows, err := s.db.Query(`SELECT id, name, ` + "`rank`" + `, context_length, updated_at FROM models_cache ORDER BY ` + "`rank`" + ` ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1471,7 +1548,7 @@ func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
 			COALESCE(SUM(CASE WHEN status='rate_limited' OR status='day_exhausted' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status='invalid' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status='unchecked' THEN 1 ELSE 0 END), 0)
-		FROM keys
+		FROM `+"`keys`"+`
 		WHERE provider = ?
 	`, provider).Scan(&stats.TotalKeys, &stats.ActiveKeys, &stats.BlockedKeys, &stats.InvalidKeys, &stats.UncheckedKeys)
 	if err != nil {
@@ -1529,24 +1606,25 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 }
 
 func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
+	today := UTCDay(time.Now())
 	rows, err := s.db.Query(`
 		SELECT 
 			k.masked_key, 
 			k.key_hash, 
 			k.status, 
 		-- usage_day is the UTC quota boundary; last_used_at is audit-only.
-		CASE WHEN k.usage_day <> date('now') THEN 0 ELSE k.usage_today END AS usage_today,
+		CASE WHEN k.usage_day <> ? THEN 0 ELSE k.usage_today END AS usage_today,
 			k.max_limit, 
 			k.cooldown_until,
 			k.last_used_at,
 			COUNT(r.id) as total_reqs,
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) as err_reqs
-		FROM keys k
+		FROM `+"`keys`"+` k
 		LEFT JOIN requests r ON k.key_hash = r.key_hash AND r.provider = k.provider
 		WHERE k.provider = ?
 		GROUP BY k.key_hash
 		ORDER BY k.usage_today DESC, total_reqs DESC
-	`, provider)
+	`, today, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -1572,7 +1650,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 
 func (s *Store) GetRateLimitsLog() ([]*DBRateLimit, error) {
 	rows, err := s.db.Query(`
-		SELECT id, timestamp, key_hash, source, limit_total, limit_remaining, usage, rate_limit_req, rate_limit_interval, reset_raw
+		SELECT id, timestamp, key_hash, source, limit_total, limit_remaining, ` + "`usage`" + `, rate_limit_req, rate_limit_interval, reset_raw
 		FROM rate_limits_log
 		ORDER BY id ASC
 	`)

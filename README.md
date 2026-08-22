@@ -1,6 +1,6 @@
 # SZX Gateway
 
-OpenAI-compatible шлюз для ротации ключей OpenRouter и AIHubMix. Держит ключи в SQLite, ретраит запросы на других ключах, показывает админку и отдаёт только free-модели.
+OpenAI-compatible шлюз для ротации ключей OpenRouter и AIHubMix. По умолчанию использует SQLite; MySQL 8 с InnoDB доступен через конфигурацию. Ретраит запросы на других ключах, показывает админку и отдаёт только free-модели.
 
 ## Что умеет
 
@@ -10,7 +10,7 @@ OpenAI-compatible шлюз для ротации ключей OpenRouter и AIHu
 - Retry/fallback при `429`, `401` и `5xx` до `-max-retries` раз.
 - Алиасы моделей `top1`, `top2`, `top3` из Shir-Man ranking.
 - Web UI с Basic Auth: ключи, bulk-операции, статистика, модели, прокси.
-- SQLite без CGO (`modernc.org/sqlite`).
+- SQLite без CGO (`modernc.org/sqlite`) или MySQL 8/InnoDB.
 
 ## Быстрый старт
 
@@ -46,6 +46,33 @@ RANKING_REFRESH=1h
 KEY_CHECK_TTL=1h
 KEY_CHECK_INTERVAL=1m
 ```
+
+### MySQL 8
+
+SQLite остаётся default и не требует дополнительных переменных. Для MySQL нужен отдельный пользователь и пустая база:
+
+```sql
+CREATE DATABASE szx_gateway CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE USER 'szx_gateway'@'%' IDENTIFIED BY 'change-me';
+GRANT ALL PRIVILEGES ON szx_gateway.* TO 'szx_gateway'@'%';
+```
+
+```env
+DB_DRIVER=mysql
+DB_DSN=szx_gateway:change-me@tcp(mysql-host:3306)/szx_gateway?parseTime=true&loc=UTC&charset=utf8mb4
+DB_MAX_OPEN_CONNS=10
+DB_MAX_IDLE_CONNS=5
+```
+
+Шлюз создаёт таблицы автоматически. Все таблицы используют `InnoDB`; MyISAM не поддерживается из-за транзакций и атомарных резервов дневных квот.
+
+Для переноса существующей SQLite-базы остановите gateway, создайте пустую MySQL-базу и выполните:
+
+```bash
+make migrate-sqlite-to-mysql SQLITE_PATH=/data/gateway.db DB_DSN='szx_gateway:change-me@tcp(mysql-host:3306)/szx_gateway?parseTime=true&loc=UTC&charset=utf8mb4'
+```
+
+Команда переносит все данные, включая ключи и логи. Не запускайте её повторно в непустую MySQL-базу. У `DB_DSN` должны быть `parseTime=true`, `loc=UTC`, `charset=utf8mb4`.
 
 Флаги:
 
