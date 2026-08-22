@@ -98,7 +98,7 @@ func TestModelStatsUsesLocalDay(t *testing.T) {
 	if len(stats) != 1 {
 		t.Fatalf("stats len = %d", len(stats))
 	}
-	if stats[0].TodayRequests != 1 || stats[0].TotalRequests != 2 || stats[0].AvgLatencyMs != 200 {
+	if stats[0].TodayRequests != 1 || stats[0].TotalRequests != 2 || stats[0].AvgLatencyMs != 200 || stats[0].TotalTokens != 0 {
 		t.Fatalf("stats = %+v", stats[0])
 	}
 }

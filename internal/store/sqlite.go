@@ -1579,7 +1579,7 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 			model, 
 			COALESCE(SUM(CASE WHEN timestamp >= ? THEN 1 ELSE 0 END), 0),
 			COUNT(*), 
-			CAST(AVG(latency_ms) AS INTEGER), 
+			AVG(latency_ms),
 			SUM(prompt_tokens + completion_tokens) 
 		FROM requests
 		WHERE provider = ?
@@ -1594,11 +1594,13 @@ func (s *Store) GetModelStats(provider string) ([]ModelStats, error) {
 	res := []ModelStats{}
 	for rows.Next() {
 		m := ModelStats{}
+		var avgLatency sql.NullFloat64
 		var totalTokens sql.NullInt64
-		err := rows.Scan(&m.Model, &m.TodayRequests, &m.TotalRequests, &m.AvgLatencyMs, &totalTokens)
+		err := rows.Scan(&m.Model, &m.TodayRequests, &m.TotalRequests, &avgLatency, &totalTokens)
 		if err != nil {
 			return nil, err
 		}
+		m.AvgLatencyMs = int64(avgLatency.Float64)
 		m.TotalTokens = totalTokens.Int64
 		res = append(res, m)
 	}
