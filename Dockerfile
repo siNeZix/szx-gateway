@@ -3,18 +3,22 @@
 FROM node:24-alpine AS web-build
 WORKDIR /src
 COPY web/package*.json ./web/
-RUN cd web && npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    cd web && npm ci --cache /root/.npm
 COPY web ./web
 RUN mkdir -p internal/web && cd web && npm run build
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
 COPY --from=web-build /src/internal/web/dist ./internal/web/dist
 # CGO disabled: modernc.org/sqlite is pure Go, so we get a static binary.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 
 # ponytail: alpine not scratch - need ca-certificates for HTTPS to openrouter.ai
 FROM alpine:3.20
