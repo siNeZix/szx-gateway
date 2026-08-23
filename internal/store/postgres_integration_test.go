@@ -29,6 +29,10 @@ func TestPostgresStore(t *testing.T) {
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("keys = %d, err = %v", len(keys), err)
 	}
+	keys[0].IsFreeTier = false
+	if err := s.UpdateKey(keys[0], provider); err != nil {
+		t.Fatal(err)
+	}
 
 	now := time.Now().UTC()
 	for i := 0; i < 2; i++ {
@@ -44,5 +48,22 @@ func TestPostgresStore(t *testing.T) {
 
 	if _, err := s.FreezeModel(provider, keys[0].KeyHash, "model", now); err != nil {
 		t.Fatal(err)
+	}
+	if err := s.SaveModelCheckConfig(ModelCheckConfig{Provider: provider, Model: "model", Enabled: true, Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := s.GetEnabledModelChecks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) == 0 {
+		t.Fatal("model check config was not saved")
+	}
+	if err := s.AddModelCheckResult(provider, "model", true, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, found, err := s.GetLatestModelCheckResult(provider, "model")
+	if err != nil || !found || !result.Success {
+		t.Fatalf("model check result = %+v, found=%v, err=%v", result, found, err)
 	}
 }

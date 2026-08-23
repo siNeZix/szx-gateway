@@ -270,9 +270,11 @@ func (s *Store) getModelCheckConfigs(query string) ([]ModelCheckConfig, error) {
 	var out []ModelCheckConfig
 	for rows.Next() {
 		var item ModelCheckConfig
-		if err := rows.Scan(&item.Provider, &item.Model, &item.Enabled, &item.Position); err != nil {
+		var enabled int
+		if err := rows.Scan(&item.Provider, &item.Model, &enabled, &item.Position); err != nil {
 			return nil, err
 		}
+		item.Enabled = enabled != 0
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -285,7 +287,7 @@ func (s *Store) SaveModelCheckConfig(config ModelCheckConfig) error {
 		query = `INSERT INTO model_check_configs(provider, model, enabled, position) VALUES (?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), position = VALUES(position)`
 	}
-	_, err := s.db.Exec(query, config.Provider, config.Model, config.Enabled, config.Position)
+	_, err := s.db.Exec(query, config.Provider, config.Model, boolInt(config.Enabled), config.Position)
 	return err
 }
 
@@ -310,16 +312,18 @@ func (s *Store) SaveModelCheckOrder(provider string, models []string) error {
 }
 
 func (s *Store) AddModelCheckResult(provider, model string, success bool, errorMsg string) error {
-	_, err := s.db.Exec(`INSERT INTO model_check_results(provider, model, timestamp, success, error) VALUES (?, ?, ?, ?, ?)`, provider, model, time.Now().UTC(), success, errorMsg)
+	_, err := s.db.Exec(`INSERT INTO model_check_results(provider, model, timestamp, success, error) VALUES (?, ?, ?, ?, ?)`, provider, model, time.Now().UTC(), boolInt(success), errorMsg)
 	return err
 }
 
 func (s *Store) GetLatestModelCheckResult(provider, model string) (ModelCheckResult, bool, error) {
 	var result ModelCheckResult
-	err := s.db.QueryRow(`SELECT timestamp, success, error FROM model_check_results WHERE provider = ? AND model = ? ORDER BY timestamp DESC LIMIT 1`, provider, model).Scan(&result.Timestamp, &result.Success, &result.Error)
+	var success int
+	err := s.db.QueryRow(`SELECT timestamp, success, error FROM model_check_results WHERE provider = ? AND model = ? ORDER BY timestamp DESC LIMIT 1`, provider, model).Scan(&result.Timestamp, &success, &result.Error)
 	if err == sql.ErrNoRows {
 		return ModelCheckResult{}, false, nil
 	}
+	result.Success = success != 0
 	return result, err == nil, err
 }
 
@@ -332,9 +336,11 @@ func (s *Store) GetModelCheckResults(provider, model string, since time.Time) ([
 	var out []ModelCheckResult
 	for rows.Next() {
 		var result ModelCheckResult
-		if err := rows.Scan(&result.Timestamp, &result.Success, &result.Error); err != nil {
+		var success int
+		if err := rows.Scan(&result.Timestamp, &success, &result.Error); err != nil {
 			return nil, err
 		}
+		result.Success = success != 0
 		out = append(out, result)
 	}
 	return out, rows.Err()
@@ -1232,7 +1238,7 @@ func (s *Store) UpdateKey(k *DBKey, provider string) error {
 			last_used_at = ?
 		WHERE key_hash = ? AND provider = ?
 	`, k.Status, k.LimitRemaining, k.UsageToday, k.UsageDay, k.MaxLimit,
-		k.IsFreeTier, k.RateLimitReq, k.RateLimitInterval,
+		boolInt(k.IsFreeTier), k.RateLimitReq, k.RateLimitInterval,
 		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.KeyHash, provider)
 	return err
 }
