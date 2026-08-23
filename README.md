@@ -85,17 +85,17 @@ CREATE DATABASE szx_gateway OWNER szx_gateway;
 
 ```env
 DB_DRIVER=postgres
-DB_DSN=postgres://szx_gateway:change-me@postgres-host:5432/szx_gateway?sslmode=require
+DB_DSN=postgres://szx_gateway:change-me@postgres-host:5432/szx_gateway?sslmode=disable
 DB_MAX_OPEN_CONNS=10
 DB_MAX_IDLE_CONNS=5
 ```
 
-Поддерживается также значение `postgresql` для `DB_DRIVER`. Шлюз автоматически создаёт таблицы, `TIMESTAMPTZ` хранит время в UTC, а дневные лимиты резервируются атомарно.
+Поддерживается также значение `postgresql` для `DB_DRIVER`. Шлюз автоматически создаёт таблицы, `TIMESTAMPTZ` хранит время в UTC, а дневные лимиты резервируются атомарно. Для локальной сети без TLS используйте `sslmode=disable`; для TLS-сервера настройте проверку сертификата через `sslmode=verify-full` и `sslrootcert`.
 
 Для переноса SQLite-базы остановите gateway, создайте пустую PostgreSQL-базу и выполните:
 
 ```bash
-make migrate-sqlite-to-postgres SQLITE_PATH=/data/gateway.db DB_DSN='postgres://szx_gateway:change-me@postgres-host:5432/szx_gateway?sslmode=require'
+make migrate-sqlite-to-postgres SQLITE_PATH=/data/gateway.db DB_DSN='postgres://szx_gateway:change-me@postgres-host:5432/szx_gateway?sslmode=disable'
 ```
 
 Команда заменяет данные каждой таблицы одной транзакцией и после импорта синхронизирует identity sequences.

@@ -243,7 +243,7 @@ func Open(driver, sqlitePath, databaseDSN string, maxOpenConns, maxIdleConns int
 	s := &Store{db: db, driver: driver}
 	if err := s.migrate(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to run database migrations: %w", err)
+		return nil, fmt.Errorf("failed to initialize database schema: %w", err)
 	}
 
 	return s, nil
