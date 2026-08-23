@@ -271,6 +271,7 @@ func (h *AihubmixHandler) proxyWithRetry(w http.ResponseWriter, r *http.Request)
 			// ponytail: лимит 10 запросов — на аккаунт, не на модель. Морозим весь ключ до конца суток.
 			keyState.MarkDayExhausted()
 			h.pool.SyncKeyToDB(keyState)
+			finalErr = fmt.Errorf("AIHubMix free quota exhausted")
 			continue
 		}
 
