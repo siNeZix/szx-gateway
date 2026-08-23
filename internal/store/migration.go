@@ -11,13 +11,23 @@ import (
 // MigrateSQLiteToMySQL replaces all gateway data with a SQLite snapshot.
 // Each table is copied in one transaction, so interrupted runs are safe to restart.
 func MigrateSQLiteToMySQL(sqlitePath, mysqlDSN string, maxOpenConns, maxIdleConns int) error {
+	return migrateSQLiteToDatabase(sqlitePath, "mysql", mysqlDSN, maxOpenConns, maxIdleConns)
+}
+
+// MigrateSQLiteToPostgres replaces all gateway data with a SQLite snapshot.
+// Each table is copied in one transaction, so interrupted runs are safe to restart.
+func MigrateSQLiteToPostgres(sqlitePath, postgresDSN string, maxOpenConns, maxIdleConns int) error {
+	return migrateSQLiteToDatabase(sqlitePath, "postgres", postgresDSN, maxOpenConns, maxIdleConns)
+}
+
+func migrateSQLiteToDatabase(sqlitePath, driver, dsn string, maxOpenConns, maxIdleConns int) error {
 	source, err := sql.Open("sqlite", sqlitePath)
 	if err != nil {
 		return fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer source.Close()
 
-	destination, err := Open("mysql", "", mysqlDSN, maxOpenConns, maxIdleConns)
+	destination, err := Open(driver, "", dsn, maxOpenConns, maxIdleConns)
 	if err != nil {
 		return err
 	}
@@ -34,6 +44,13 @@ func MigrateSQLiteToMySQL(sqlitePath, mysqlDSN string, maxOpenConns, maxIdleConn
 			return err
 		}
 		log.Printf("%s: %d rows copied in %s", table, copied, time.Since(started).Round(time.Millisecond))
+	}
+	if driver == "postgres" {
+		for _, table := range []string{"requests", "rate_limits_log", "proxies", "proxy_logs", "model_check_results"} {
+			if _, err := destination.db.Exec("SELECT setval(pg_get_serial_sequence('" + table + "', 'id'), COALESCE(MAX(id), 1), MAX(id) IS NOT NULL) FROM " + table); err != nil {
+				return fmt.Errorf("sync PostgreSQL sequence for %s: %w", table, err)
+			}
+		}
 	}
 	return nil
 }
@@ -65,11 +82,11 @@ func copyTable(source, destination *sql.DB, table string) (int64, error) {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec("DELETE FROM " + quotedTable); err != nil {
-		return 0, fmt.Errorf("clear MySQL table %s: %w", table, err)
+		return 0, fmt.Errorf("clear destination table %s: %w", table, err)
 	}
 	statement, err := tx.Prepare(query)
 	if err != nil {
-		return 0, fmt.Errorf("prepare MySQL insert for %s: %w", table, err)
+		return 0, fmt.Errorf("prepare destination insert for %s: %w", table, err)
 	}
 	defer statement.Close()
 	values := make([]any, len(columns))

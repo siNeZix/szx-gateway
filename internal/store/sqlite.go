@@ -206,19 +206,22 @@ func New(dbPath string) (*Store, error) {
 	return Open("sqlite", dbPath, "", 1, 1)
 }
 
-func Open(driver, sqlitePath, mysqlDSN string, maxOpenConns, maxIdleConns int) (*Store, error) {
+func Open(driver, sqlitePath, databaseDSN string, maxOpenConns, maxIdleConns int) (*Store, error) {
 	if driver == "" {
 		driver = "sqlite"
 	}
-	if driver != "sqlite" && driver != "mysql" {
+	if driver == "postgresql" {
+		driver = "postgres"
+	}
+	if driver != "sqlite" && driver != "mysql" && driver != "postgres" {
 		return nil, fmt.Errorf("unsupported database driver %q", driver)
 	}
 	dsn := sqlitePath
-	if driver == "mysql" {
-		if mysqlDSN == "" {
-			return nil, fmt.Errorf("DB_DSN is required for mysql")
+	if driver == "mysql" || driver == "postgres" {
+		if databaseDSN == "" {
+			return nil, fmt.Errorf("DB_DSN is required for %s", driver)
 		}
-		dsn = mysqlDSN
+		dsn = databaseDSN
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -340,6 +343,9 @@ func (s *Store) GetModelCheckResults(provider, model string, since time.Time) ([
 func (s *Store) migrate() error {
 	if s.driver == "mysql" {
 		return s.migrateMySQL()
+	}
+	if s.driver == "postgres" {
+		return s.migratePostgres()
 	}
 	queries := []string{
 		`PRAGMA journal_mode=WAL;`,
@@ -561,6 +567,11 @@ func (s *Store) AddProxy(p DBProxy) (bool, error) {
 		query = `INSERT INTO proxies (raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE id = id`
+	}
+	if s.driver == "postgres" {
+		query = `INSERT INTO proxies (raw, scheme, host, port, username, password, status, last_checked_at, last_error, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (scheme, host, port, username, password) DO NOTHING`
 	}
 	res, err := s.db.Exec(query, p.Raw, p.Scheme, p.Host, p.Port, p.Username, p.Password, p.Status, p.LastCheckedAt.UTC(), p.LastError, now)
 	if err != nil {
@@ -880,6 +891,9 @@ func (s *Store) ReserveModelUsage(provider, keyHash, model string, now time.Time
 	if s.driver == "mysql" {
 		return s.reserveModelUsageMySQL(provider, keyHash, model, day, now, limit)
 	}
+	if s.driver == "postgres" {
+		return s.reserveModelUsagePostgres(provider, keyHash, model, day, now, limit)
+	}
 	res, err := s.db.Exec(`
 		INSERT INTO model_usage (provider, key_hash, model, day, requests, updated_at)
 		VALUES (?, ?, ?, ?, 1, ?)
@@ -905,6 +919,9 @@ func (s *Store) RollbackModelUsage(provider, keyHash, model string, now time.Tim
 func (s *Store) FreezeModel(provider, keyHash, model string, now time.Time) (time.Duration, error) {
 	if s.driver == "mysql" {
 		return s.freezeModelMySQL(provider, keyHash, model, now)
+	}
+	if s.driver == "postgres" {
+		return s.freezeModelPostgres(provider, keyHash, model, now)
 	}
 	day := UTCDay(now)
 	var freezeCount int

@@ -37,11 +37,11 @@ func Load() *Config {
 	cfg := &Config{}
 
 	flag.StringVar(&cfg.GatewayToken, "token", getEnv("GATEWAY_TOKEN", "super-secret-gateway-token"), "Bearer token required to use the gateway")
-	flag.StringVar(&cfg.DBDriver, "db-driver", getEnv("DB_DRIVER", "sqlite"), "Database driver: sqlite or mysql")
-	flag.StringVar(&cfg.DBDSN, "db-dsn", getEnv("DB_DSN", ""), "Database DSN (required for mysql)")
+	flag.StringVar(&cfg.DBDriver, "db-driver", getEnv("DB_DRIVER", "sqlite"), "Database driver: sqlite, mysql, or postgres")
+	flag.StringVar(&cfg.DBDSN, "db-dsn", getEnv("DB_DSN", ""), "Database DSN (required for mysql or postgres)")
 	flag.StringVar(&cfg.DbPath, "db-path", getEnv("DB_PATH", "gateway.db"), "Path to the SQLite database")
-	flag.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", getEnvInt("DB_MAX_OPEN_CONNS", 10), "Maximum open database connections (MySQL)")
-	flag.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", getEnvInt("DB_MAX_IDLE_CONNS", 5), "Maximum idle database connections (MySQL)")
+	flag.IntVar(&cfg.DBMaxOpenConns, "db-max-open-conns", getEnvInt("DB_MAX_OPEN_CONNS", 10), "Maximum open database connections (MySQL/PostgreSQL)")
+	flag.IntVar(&cfg.DBMaxIdleConns, "db-max-idle-conns", getEnvInt("DB_MAX_IDLE_CONNS", 5), "Maximum idle database connections (MySQL/PostgreSQL)")
 	flag.StringVar(&cfg.ListenAddr, "listen", getEnv("LISTEN_ADDR", ":8080"), "Listen address for the gateway server")
 	flag.StringVar(&cfg.AIHubMixListenAddr, "aihubmix-listen", getEnv("AIHUBMIX_LISTEN_ADDR", ":8081"), "Listen address for the AIHubMix proxy server")
 	flag.StringVar(&cfg.GoogleListenAddr, "google-listen", getEnv("GOOGLE_LISTEN_ADDR", ":8082"), "Listen address for the Google AI Studio proxy server")
