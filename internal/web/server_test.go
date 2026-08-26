@@ -48,3 +48,13 @@ func TestAuthSessionFlow(t *testing.T) {
 		t.Fatalf("logout status = %d, want %d", response.Code, http.StatusOK)
 	}
 }
+
+func TestIsNoDataCheckError(t *testing.T) {
+	const exhausted = "all keys are exhausted, rate limited or in cooldown for model test (pool size: 10)"
+	if !isNoDataCheckError(exhausted) {
+		t.Fatal("exhausted key pool must be classified as no data")
+	}
+	if isNoDataCheckError("Provider returned error") {
+		t.Fatal("provider error must remain a failed check")
+	}
+}

@@ -174,20 +174,26 @@ func (ws *WebServer) apiAuthLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 type modelCheckHour struct {
-	Hour    string   `json:"hour"`
-	Percent int      `json:"percent"`
-	Errors  []string `json:"errors"`
-	HasData bool     `json:"has_data"`
-	Checks  int      `json:"checks"`
+	Hour          string   `json:"hour"`
+	Percent       int      `json:"percent"`
+	Errors        []string `json:"errors"`
+	NoDataReasons []string `json:"no_data_reasons"`
+	HasData       bool     `json:"has_data"`
+	Checks        int      `json:"checks"`
 }
 
 type modelCheckItem struct {
-	Model    string           `json:"model"`
-	Name     string           `json:"name"`
-	Enabled  bool             `json:"enabled"`
-	Position int              `json:"position"`
-	Hours    []modelCheckHour `json:"hours"`
-	Status   string           `json:"status"`
+	Model        string           `json:"model"`
+	Name         string           `json:"name"`
+	Enabled      bool             `json:"enabled"`
+	Position     int              `json:"position"`
+	Hours        []modelCheckHour `json:"hours"`
+	Status       string           `json:"status"`
+	StatusDetail string           `json:"status_detail"`
+}
+
+func isNoDataCheckError(err string) bool {
+	return strings.HasPrefix(err, "all keys are exhausted, rate limited or in cooldown")
 }
 
 func (ws *WebServer) apiModelChecks(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +259,10 @@ func (ws *WebServer) apiModelChecks(w http.ResponseWriter, r *http.Request) {
 			if i < 0 || i >= len(hours) {
 				continue
 			}
+			if !result.Success && isNoDataCheckError(result.Error) {
+				hours[i].NoDataReasons = append(hours[i].NoDataReasons, result.Error)
+				continue
+			}
 			counts[i][1]++
 			if result.Success {
 				counts[i][0]++
@@ -267,17 +277,21 @@ func (ws *WebServer) apiModelChecks(w http.ResponseWriter, r *http.Request) {
 				hours[i].Checks = count[1]
 			}
 		}
-		status := ""
+		status, statusDetail := "", ""
 		if enabled {
 			status = "ок"
 			for i := 0; i < len(results) && i < 10; i++ {
 				if !results[i].Success {
-					status = results[i].Error
+					if isNoDataCheckError(results[i].Error) {
+						status, statusDetail = "нет данных", results[i].Error
+					} else {
+						status = results[i].Error
+					}
 					break
 				}
 			}
 		}
-		out = append(out, modelCheckItem{Model: model.ID, Name: model.Name, Enabled: enabled, Position: position, Hours: hours, Status: status})
+		out = append(out, modelCheckItem{Model: model.ID, Name: model.Name, Enabled: enabled, Position: position, Hours: hours, Status: status, StatusDetail: statusDetail})
 	}
 	// Configured rows retain their explicit drag-and-drop order; unconfigured follow catalog order.
 	for i := range out {

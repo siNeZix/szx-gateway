@@ -179,6 +179,7 @@ export interface ModelCheckHour {
   hour: string
   percent: number
   errors: string[]
+  no_data_reasons: string[]
   has_data: boolean
 	checks: number
 }
@@ -190,4 +191,5 @@ export interface ModelCheckItem {
   position: number
   hours: ModelCheckHour[]
   status: string
+  status_detail: string
 }
