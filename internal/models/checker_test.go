@@ -27,6 +27,11 @@ func TestModelChecker_CheckUsesOnlyContent(t *testing.T) {
 			success:  false,
 		},
 		{
+			name:     "tool call is ignored",
+			response: `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1"}]},"finish_reason":"tool_calls"}]}`,
+			success:  false,
+		},
+		{
 			name:     "short content fails",
 			response: `{"choices":[{"message":{"content":"42"}}]}`,
 			success:  false,
@@ -59,6 +64,9 @@ func TestModelChecker_CheckUsesOnlyContent(t *testing.T) {
 			}
 			if result.Success != tt.success {
 				t.Errorf("success = %v, want %v; error = %q", result.Success, tt.success, result.Error)
+			}
+			if !tt.success && result.Error == "ожидался ответ длиннее 2 символов, получено \"\"" {
+				t.Errorf("error must include response diagnostics: %q", result.Error)
 			}
 		})
 	}

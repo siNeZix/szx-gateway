@@ -95,8 +95,13 @@ func (c *ModelChecker) Check(provider, model string) {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content          string            `json:"content"`
+				ReasoningContent string            `json:"reasoning_content"`
+				Refusal          string            `json:"refusal"`
+				ToolCalls        []json.RawMessage `json:"tool_calls"`
+				FunctionCall     json.RawMessage   `json:"function_call"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Error struct {
 			Message string `json:"message"`
@@ -115,12 +120,38 @@ func (c *ModelChecker) Check(provider, model string) {
 		return
 	}
 	content := ""
+	detail := "нет choices"
 	if len(payload.Choices) > 0 {
-		content = strings.TrimSpace(payload.Choices[0].Message.Content)
+		choice := payload.Choices[0]
+		content = strings.TrimSpace(choice.Message.Content)
+		detail = responseDetail(choice.Message.ReasoningContent, choice.Message.Refusal, len(choice.Message.ToolCalls), len(choice.Message.FunctionCall), choice.FinishReason)
 	}
 	if utf8.RuneCountInString(content) <= 2 {
-		_ = c.store.AddModelCheckResult(provider, model, false, fmt.Sprintf("ожидался ответ длиннее 2 символов, получено %q", content))
+		_ = c.store.AddModelCheckResult(provider, model, false, fmt.Sprintf("ожидался ответ длиннее 2 символов, получено %q (%s)", content, detail))
 		return
 	}
 	_ = c.store.AddModelCheckResult(provider, model, true, "")
+}
+
+func responseDetail(reasoning, refusal string, toolCalls, functionCall int, finishReason string) string {
+	parts := make([]string, 0, 4)
+	if n := utf8.RuneCountInString(strings.TrimSpace(reasoning)); n > 0 {
+		parts = append(parts, fmt.Sprintf("reasoning_content: %d символов", n))
+	}
+	if n := utf8.RuneCountInString(strings.TrimSpace(refusal)); n > 0 {
+		parts = append(parts, fmt.Sprintf("refusal: %d символов", n))
+	}
+	if toolCalls > 0 {
+		parts = append(parts, fmt.Sprintf("tool_calls: %d", toolCalls))
+	}
+	if functionCall > 0 {
+		parts = append(parts, "function_call")
+	}
+	if finishReason != "" {
+		parts = append(parts, "finish_reason: "+finishReason)
+	}
+	if len(parts) == 0 {
+		return "пустой completion"
+	}
+	return strings.Join(parts, "; ")
 }
