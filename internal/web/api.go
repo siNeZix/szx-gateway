@@ -32,7 +32,7 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 // Вторым возвратом идёт bool: false если провайдер неизвестен (caller решает, 400 или дефолт).
 func providerFromRequest(r *http.Request) (string, bool) {
 	p := strings.TrimSpace(r.URL.Query().Get("provider"))
-	if p == "" || (p != "openrouter" && p != "aihubmix" && p != "google") {
+	if p == "" || (p != "openrouter" && p != "aihubmix" && p != "google" && p != "1minai") {
 		return "openrouter", true
 	}
 	return p, true
@@ -41,7 +41,7 @@ func providerFromRequest(r *http.Request) (string, bool) {
 // requireProviderForm достаёт provider из JSON-body или form. Для POST /api/keys и bulk.
 func requireProviderForm(r *http.Request) (string, bool) {
 	p := strings.TrimSpace(r.FormValue("provider"))
-	if p != "openrouter" && p != "aihubmix" && p != "google" {
+	if p != "openrouter" && p != "aihubmix" && p != "google" && p != "1minai" {
 		return "", false
 	}
 	return p, true
@@ -210,6 +210,8 @@ func (ws *WebServer) apiModelChecks(w http.ResponseWriter, r *http.Request) {
 		catalog = ws.rankingMgr.GetAihubmixFreeModels()
 	case "google":
 		catalog = ws.rankingMgr.GetGoogleFreeModels()
+	case "1minai":
+		catalog = ws.rankingMgr.GetOneMinAIModels()
 	}
 	if provider == "openrouter" {
 		catalog = append([]store.DBModel{{ID: "top1", Name: "top1"}, {ID: "top2", Name: "top2"}, {ID: "top3", Name: "top3"}}, catalog...)
@@ -310,7 +312,7 @@ func (ws *WebServer) apiModelCheckConfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var config store.ModelCheckConfig
-	if err := json.NewDecoder(r.Body).Decode(&config); err != nil || (config.Provider != "openrouter" && config.Provider != "aihubmix" && config.Provider != "google") || config.Model == "" {
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil || (config.Provider != "openrouter" && config.Provider != "aihubmix" && config.Provider != "google" && config.Provider != "1minai") || config.Model == "" {
 		writeAPIError(w, http.StatusBadRequest, "invalid model check config")
 		return
 	}
@@ -330,7 +332,7 @@ func (ws *WebServer) apiModelCheckOrder(w http.ResponseWriter, r *http.Request) 
 		Provider string   `json:"provider"`
 		Models   []string `json:"models"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google") {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google" && body.Provider != "1minai") {
 		writeAPIError(w, http.StatusBadRequest, "invalid model check order")
 		return
 	}
@@ -350,7 +352,7 @@ func (ws *WebServer) apiModelCheckTest(w http.ResponseWriter, r *http.Request) {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google") || body.Model == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || (body.Provider != "openrouter" && body.Provider != "aihubmix" && body.Provider != "google" && body.Provider != "1minai") || body.Model == "" {
 		writeAPIError(w, http.StatusBadRequest, "invalid model check test")
 		return
 	}
@@ -421,6 +423,7 @@ func (ws *WebServer) apiProviders(w http.ResponseWriter, r *http.Request) {
 		{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1"},
 		{"aihubmix", "AIHubMix", "https://aihubmix.com/v1"},
 		{"google", "Google AI Studio", "https://generativelanguage.googleapis.com/v1beta"},
+		{"1minai", "1min.AI", "https://api.1min.ai/api/chat-with-ai"},
 	}
 
 	out := make([]providerInfo, 0, len(defs))
@@ -480,6 +483,9 @@ func (ws *WebServer) apiKeys(w http.ResponseWriter, r *http.Request) {
 		CooldownLeft  string `json:"cooldown_left"`  // человекочитаемое время; пусто если не на кулдауне
 		CooldownUntil string `json:"cooldown_until"` // ISO-время для фронтенд-форматирования; пусто если never
 		LastUsedAt    string `json:"last_used_at"`   // ISO-время; пусто если never
+		CreditLimit   int64  `json:"credit_limit"`
+		CreditUsed    int64  `json:"credit_used"`
+		CreditLeft    int64  `json:"credit_left"`
 	}
 
 	out := make([]keyItem, 0, len(stats))
@@ -512,6 +518,9 @@ func (ws *WebServer) apiKeys(w http.ResponseWriter, r *http.Request) {
 			CooldownLeft:  cooldownLeft,
 			CooldownUntil: cooldownUntil,
 			LastUsedAt:    lastUsedAt,
+			CreditLimit:   k.CreditLimit,
+			CreditUsed:    k.CreditUsed,
+			CreditLeft:    max(k.CreditLimit-k.CreditUsed, 0),
 		})
 	}
 
@@ -553,7 +562,7 @@ func (ws *WebServer) apiKeysAdd(w http.ResponseWriter, r *http.Request) {
 		rawKeys = splitKeyLines(r.FormValue("keys"))
 	}
 
-	if provider != "openrouter" && provider != "aihubmix" && provider != "google" {
+	if provider != "openrouter" && provider != "aihubmix" && provider != "google" && provider != "1minai" {
 		writeAPIError(w, http.StatusBadRequest, "unknown provider")
 		return
 	}
@@ -621,7 +630,7 @@ func (ws *WebServer) apiKeysBulk(w http.ResponseWriter, r *http.Request) {
 		hashes = rawHashes
 	}
 
-	if provider != "openrouter" && provider != "aihubmix" && provider != "google" {
+	if provider != "openrouter" && provider != "aihubmix" && provider != "google" && provider != "1minai" {
 		writeAPIError(w, http.StatusBadRequest, "unknown provider")
 		return
 	}
@@ -750,7 +759,7 @@ func (ws *WebServer) apiProxySettings(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if ps.Provider != "openrouter" && ps.Provider != "aihubmix" && ps.Provider != "google" {
+		if ps.Provider != "openrouter" && ps.Provider != "aihubmix" && ps.Provider != "google" && ps.Provider != "1minai" {
 			writeAPIError(w, http.StatusBadRequest, "unknown provider")
 			return
 		}
@@ -767,7 +776,7 @@ func (ws *WebServer) apiProxySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []store.ProxySettings{}
-	for _, provider := range []string{"openrouter", "aihubmix", "google"} {
+	for _, provider := range []string{"openrouter", "aihubmix", "google", "1minai"} {
 		ps, err := ws.store.GetProxySettings(provider)
 		if err != nil {
 			log.Printf("apiProxySettings get: %v", err)
@@ -871,8 +880,10 @@ func (ws *WebServer) apiStats(w http.ResponseWriter, r *http.Request) {
 		freeModels = ws.rankingMgr.GetFreeModels()
 	} else if provider == "aihubmix" {
 		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
-	} else {
+	} else if provider == "google" {
 		freeModels = ws.rankingMgr.GetGoogleFreeModels()
+	} else {
+		freeModels = ws.rankingMgr.GetOneMinAIModels()
 	}
 	if topModels == nil {
 		topModels = []store.DBModel{}
@@ -1032,8 +1043,10 @@ func (ws *WebServer) apiModels(w http.ResponseWriter, r *http.Request) {
 		freeModels = ws.rankingMgr.GetFreeModels()
 	} else if provider == "aihubmix" {
 		freeModels = ws.rankingMgr.GetAihubmixFreeModels()
-	} else {
+	} else if provider == "google" {
 		freeModels = ws.rankingMgr.GetGoogleFreeModels()
+	} else {
+		freeModels = ws.rankingMgr.GetOneMinAIModels()
 	}
 
 	// topModels может быть nil для aihubmix — нормализуем в пустой слайс для стабильного JSON.

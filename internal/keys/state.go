@@ -14,7 +14,7 @@ type KeyState struct {
 	RawKey            string
 	KeyHash           string
 	MaskedKey         string
-	Status            string // unchecked, active, rate_limited, day_exhausted, invalid
+	Status            string // unchecked, active, rate_limited, day_exhausted, credit_exhausted, invalid
 	LimitRemaining    int64
 	UsageToday        int64
 	UsageDay          string
@@ -22,6 +22,8 @@ type KeyState struct {
 	IsFreeTier        bool
 	RateLimitReq      int
 	RateLimitInterval string
+	CreditLimit       int64
+	CreditUsed        int64
 	CooldownUntil     time.Time
 	LastCheckedAt     time.Time
 	LastUsedAt        time.Time
@@ -45,6 +47,8 @@ func NewKeyState(rawKey string, dbKey *store.DBKey) *KeyState {
 		IsFreeTier:         dbKey.IsFreeTier,
 		RateLimitReq:       dbKey.RateLimitReq,
 		RateLimitInterval:  dbKey.RateLimitInterval,
+		CreditLimit:        dbKey.CreditLimit,
+		CreditUsed:         dbKey.CreditUsed,
 		CooldownUntil:      dbKey.CooldownUntil,
 		LastCheckedAt:      dbKey.LastCheckedAt,
 		LastUsedAt:         dbKey.LastUsedAt,
@@ -69,6 +73,8 @@ func (ks *KeyState) ToDB() *store.DBKey {
 		IsFreeTier:        ks.IsFreeTier,
 		RateLimitReq:      ks.RateLimitReq,
 		RateLimitInterval: ks.RateLimitInterval,
+		CreditLimit:       ks.CreditLimit,
+		CreditUsed:        ks.CreditUsed,
 		CooldownUntil:     ks.CooldownUntil,
 		LastCheckedAt:     ks.LastCheckedAt,
 		LastUsedAt:        ks.LastUsedAt,
@@ -114,7 +120,7 @@ func cleanTimes(times []time.Time, now time.Time, window time.Duration) []time.T
 func (ks *KeyState) usable(now time.Time) bool {
 	ks.ResetDailyUsageIfNewDay()
 
-	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" {
+	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "credit_exhausted" || ks.Status == "disabled" {
 		return false
 	}
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
@@ -145,14 +151,14 @@ func (ks *KeyState) CanUseBasic(now time.Time) bool {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	ks.ResetDailyUsageIfNewDay()
-	return ks.Status != "invalid" && ks.Status != "day_exhausted" && ks.Status != "disabled" && !ks.CooldownUntil.After(now)
+	return ks.Status != "invalid" && ks.Status != "day_exhausted" && ks.Status != "credit_exhausted" && ks.Status != "disabled" && !ks.CooldownUntil.After(now)
 }
 
 func (ks *KeyState) CanUseModel(now time.Time, model string) bool {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	ks.ResetDailyUsageIfNewDay()
-	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" {
+	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "credit_exhausted" || ks.Status == "disabled" {
 		return false
 	}
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
@@ -180,7 +186,7 @@ func (ks *KeyState) TryReserveModel(now time.Time, model string, rpm int) bool {
 	defer ks.mu.Unlock()
 
 	ks.ResetDailyUsageIfNewDay()
-	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "disabled" || ks.CooldownUntil.After(now) {
+	if ks.Status == "invalid" || ks.Status == "day_exhausted" || ks.Status == "credit_exhausted" || ks.Status == "disabled" || ks.CooldownUntil.After(now) {
 		return false
 	}
 	if ks.MaxLimit > 0 && ks.UsageToday >= ks.MaxLimit {
@@ -213,6 +219,24 @@ func (ks *KeyState) SetModelCooldown(model string, until time.Time) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	ks.ModelCooldownUntil[model] = until
+}
+
+func (ks *KeyState) SetCreditBalance(limit, used int64) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	if limit > 0 {
+		ks.CreditLimit = limit
+		ks.CreditUsed = used
+		ks.LimitRemaining = limit - used
+		if ks.LimitRemaining < 0 {
+			ks.LimitRemaining = 0
+		}
+		if ks.LimitRemaining == 0 {
+			ks.Status = "credit_exhausted"
+		} else if ks.Status == "credit_exhausted" {
+			ks.Status = "active"
+		}
+	}
 }
 
 // RegisterRequest increments usage and records request timestamp for rate limiting.

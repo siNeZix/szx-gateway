@@ -119,6 +119,35 @@ func TestRankingManager_FetchFree(t *testing.T) {
 	}
 }
 
+func TestFetchOneMinAIModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("feature") != "UNIFY_CHAT_WITH_AI" {
+			t.Errorf("feature query = %q", r.URL.Query().Get("feature"))
+		}
+		fmt.Fprint(w, `{"models":[{"modelId":"gpt-4o-mini","name":"GPT-4o mini","status":"ACTIVE","information":"Fast model","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{"CONTEXT":128000,"MAX_OUTPUT_TOKEN":16384},"modality":{"INPUT":["text","image"],"OUTPUT":["text"]}},{"modelId":"retired-model","name":"Retired","status":"INACTIVE","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{},"modality":{}}],"total":2}`)
+	}))
+	defer server.Close()
+
+	s, err := store.New(filepath.Join(t.TempDir(), "oneminai.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+	rm := NewRankingManager(s, time.Hour)
+	rm.oneMinAIURL = server.URL + "?feature=UNIFY_CHAT_WITH_AI"
+	if err := rm.fetchOneMinAIModels(); err != nil {
+		t.Fatalf("fetchOneMinAIModels: %v", err)
+	}
+	models := rm.GetOneMinAIModels()
+	if len(models) != 1 || !rm.IsOneMinAIModel("gpt-4o-mini") || rm.IsOneMinAIModel("retired-model") || models[0].ContextLength != 128000 || models[0].MaxOutput != 16384 {
+		t.Fatalf("unexpected 1min.AI models: %+v", models)
+	}
+	cached, err := s.GetCachedOneMinAIModels()
+	if err != nil || len(cached) != 1 {
+		t.Fatalf("cached 1min.AI models: len=%d err=%v", len(cached), err)
+	}
+}
+
 func TestRankingManager_FetchAihubmixFree(t *testing.T) {
 	// AIHubMix /v1/models filters available free models by suffix;
 	// /api/v1/models enriches them with context/pricing/capabilities.

@@ -22,7 +22,7 @@ const Ctx = createContext<ProviderCtx | null>(null)
 export function ProviderProvider({ children }: { children: ReactNode }) {
   const [provider, setProvider] = useState<Provider>(() => {
     const p = localStorage.getItem(STORAGE_KEY)
-    if (p === 'aihubmix' || p === 'google') return p
+    if (p === 'aihubmix' || p === 'google' || p === '1minai') return p
     return 'openrouter'
   })
 

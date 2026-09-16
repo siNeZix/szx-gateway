@@ -30,8 +30,8 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stdout, logWriter))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.LUTC)
 
-	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix + Google)...")
-	log.Printf("OpenRouter on %s, AIHubMix on %s, Google on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr, cfg.GoogleListenAddr)
+	log.Println("Starting SZX Gateway (OpenRouter + AIHubMix + Google + 1min.AI)...")
+	log.Printf("OpenRouter on %s, AIHubMix on %s, Google on %s, 1min.AI on %s", cfg.ListenAddr, cfg.AIHubMixListenAddr, cfg.GoogleListenAddr, cfg.OneMinAIListenAddr)
 
 	dbStore, err := store.Open(cfg.DBDriver, cfg.DbPath, cfg.DBDSN, cfg.DBMaxOpenConns, cfg.DBMaxIdleConns)
 	if err != nil {
@@ -57,6 +57,12 @@ func main() {
 		log.Fatalf("Google key pool init failed: %v", err)
 	}
 	log.Println("Google key pool loaded.")
+
+	oneMinAIPool, err := keys.NewKeyPool(dbStore, "1minai")
+	if err != nil {
+		log.Fatalf("1min.AI key pool init failed: %v", err)
+	}
+	log.Println("1min.AI key pool loaded.")
 
 	rankingMgr := models.NewRankingManager(dbStore, cfg.RankingRefresh)
 	rankingMgr.Start()
@@ -105,6 +111,10 @@ func main() {
 	googleChecker.Start()
 	log.Println("Background key checker started (Google).")
 
+	oneMinAIChecker := keys.NewKeyChecker(oneMinAIPool, cfg.KeyCheckTTL, cfg.KeyCheckRate, cfg.KeyCheckRateInterval, cfg.KeyCheckConcurrency, "", "1minai", proxyPool, dbStore)
+	oneMinAIChecker.Start()
+	log.Println("Background key checker started (1min.AI).")
+
 	// ponytail: фоновый сброс дневных счётчиков раз в минуту. Решает баг
 	// "использовано за сегодня не сбросилось после UTC+0" — без этого сброс
 	// происходит только лениво, при первом запросе через ключ.
@@ -126,6 +136,9 @@ func main() {
 				if n := googlePool.ResetExpiredDailyUsage(); n > 0 {
 					log.Printf("Daily reset: %d google keys cleared", n)
 				}
+				if n := oneMinAIPool.ResetExpiredDailyUsage(); n > 0 {
+					log.Printf("Daily reset: %d 1minai keys cleared", n)
+				}
 			}
 		}
 	}()
@@ -134,16 +147,19 @@ func main() {
 	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr, proxyPool)
 	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr, proxyPool)
 	googleProxy := proxy.NewGoogleHandler(cfg, dbStore, googlePool, rankingMgr, proxyPool)
+	oneMinAIProxy := proxy.NewOneMinAIHandler(cfg, dbStore, oneMinAIPool, rankingMgr, proxyPool)
 
 	pools := map[string]*keys.KeyPool{
 		"openrouter": openRouterPool,
 		"aihubmix":   aihubmixPool,
 		"google":     googlePool,
+		"1minai":     oneMinAIPool,
 	}
 	modelChecker := models.NewModelChecker(dbStore, cfg.GatewayToken, map[string]string{
 		"openrouter": "http://127.0.0.1" + cfg.ListenAddr,
 		"aihubmix":   "http://127.0.0.1" + cfg.AIHubMixListenAddr,
 		"google":     "http://127.0.0.1" + cfg.GoogleListenAddr,
+		"1minai":     "http://127.0.0.1" + cfg.OneMinAIListenAddr,
 	})
 	keyChecks := keys.NewCheckService(aihubmixPool, aihubmixChecker, func() string {
 		free := rankingMgr.GetAihubmixFreeModels()
@@ -169,14 +185,25 @@ func main() {
 	webServer.Start(gMux)
 	gMux.Handle("/v1/", googleProxy)
 
+	oneMinMux := http.NewServeMux()
+	webServer.Start(oneMinMux)
+	oneMinMux.Handle("/v1/", oneMinAIProxy)
+
 	orServer := &http.Server{Addr: cfg.ListenAddr, Handler: orMux}
 	amServer := &http.Server{Addr: cfg.AIHubMixListenAddr, Handler: amMux}
 	gServer := &http.Server{Addr: cfg.GoogleListenAddr, Handler: gMux}
+	oneMinServer := &http.Server{Addr: cfg.OneMinAIListenAddr, Handler: oneMinMux}
 
 	go func() {
 		log.Printf("OpenRouter server on %s", cfg.ListenAddr)
 		if err := orServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("OpenRouter server failure: %v", err)
+		}
+	}()
+	go func() {
+		log.Printf("1min.AI server on %s", cfg.OneMinAIListenAddr)
+		if err := oneMinServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("1min.AI server failure: %v", err)
 		}
 	}()
 	go func() {
@@ -204,6 +231,7 @@ func main() {
 	keyChecker.Stop()
 	aihubmixChecker.Stop()
 	googleChecker.Stop()
+	oneMinAIChecker.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -215,6 +243,9 @@ func main() {
 	}
 	if err := gServer.Shutdown(ctx); err != nil {
 		log.Printf("Google shutdown error: %v", err)
+	}
+	if err := oneMinServer.Shutdown(ctx); err != nil {
+		log.Printf("1min.AI shutdown error: %v", err)
 	}
 
 	log.Println("SZX Gateway stopped.")

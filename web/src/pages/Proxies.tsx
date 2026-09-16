@@ -13,7 +13,7 @@ import { api } from '../api/client'
 import { StatusBadge } from '../components/ui/basics'
 import type { Provider, ProxySettings } from '../types'
 
-const providers: Provider[] = ['openrouter', 'aihubmix']
+const providers: Provider[] = ['openrouter', 'aihubmix', 'google', '1minai']
 
 function fmt(value: string) {
   if (!value) return '—'

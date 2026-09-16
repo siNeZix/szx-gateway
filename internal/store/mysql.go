@@ -14,7 +14,7 @@ func (s *Store) migrateMySQL() error {
 			` + q("limit_remaining") + ` BIGINT NOT NULL DEFAULT 0, ` + q("usage_today") + ` BIGINT NOT NULL DEFAULT 0, ` + q("usage_day") + ` VARCHAR(10) NOT NULL DEFAULT '',
 			` + q("max_limit") + ` BIGINT NOT NULL DEFAULT 0, ` + q("is_free_tier") + ` TINYINT NOT NULL DEFAULT 1, ` + q("rate_limit_req") + ` INT NOT NULL DEFAULT 20,
 			` + q("rate_limit_interval") + ` VARCHAR(32) NOT NULL DEFAULT '1m', ` + q("cooldown_until") + ` DATETIME(6) NOT NULL,
-			` + q("last_checked_at") + ` DATETIME(6) NOT NULL, ` + q("last_used_at") + ` DATETIME(6) NOT NULL, ` + q("raw_key") + ` TEXT NOT NULL,
+			` + q("last_checked_at") + ` DATETIME(6) NOT NULL, ` + q("last_used_at") + ` DATETIME(6) NOT NULL, credit_limit BIGINT NOT NULL DEFAULT 0, credit_used BIGINT NOT NULL DEFAULT 0, ` + q("raw_key") + ` TEXT NOT NULL,
 			` + q("provider") + ` VARCHAR(32) NOT NULL DEFAULT 'openrouter', INDEX ` + q("idx_keys_provider") + ` (` + q("provider") + `)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS requests (
@@ -34,6 +34,7 @@ func (s *Store) migrateMySQL() error {
 		`CREATE TABLE IF NOT EXISTS free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS aihubmix_free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS google_free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS oneminai_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS model_usage (
 			provider VARCHAR(32) NOT NULL, key_hash VARCHAR(64) NOT NULL, model VARCHAR(512) NOT NULL, day VARCHAR(10) NOT NULL,
 			requests BIGINT NOT NULL DEFAULT 0, tokens BIGINT NOT NULL DEFAULT 0, exhausted TINYINT NOT NULL DEFAULT 0,
@@ -57,7 +58,10 @@ func (s *Store) migrateMySQL() error {
 			return fmt.Errorf("mysql migration query failed: %w", err)
 		}
 	}
-	return nil
+	_, _ = s.db.Exec(`ALTER TABLE ` + q("keys") + ` ADD COLUMN credit_limit BIGINT NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + q("keys") + ` ADD COLUMN credit_used BIGINT NOT NULL DEFAULT 0`)
+	_, err := s.db.Exec(`INSERT IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google'), ('1minai')`)
+	return err
 }
 
 func (s *Store) reserveModelUsageMySQL(provider, keyHash, model, day string, now time.Time, limit int64) (bool, error) {

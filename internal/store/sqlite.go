@@ -29,6 +29,8 @@ type DBKey struct {
 	IsFreeTier        bool      `json:"is_free_tier"`
 	RateLimitReq      int       `json:"rate_limit_req"`
 	RateLimitInterval string    `json:"rate_limit_interval"`
+	CreditLimit       int64     `json:"credit_limit"`
+	CreditUsed        int64     `json:"credit_used"`
 	CooldownUntil     time.Time `json:"cooldown_until"`
 	LastCheckedAt     time.Time `json:"last_checked_at"`
 	LastUsedAt        time.Time `json:"last_used_at"`
@@ -370,6 +372,8 @@ func (s *Store) migrate() error {
 			cooldown_until DATETIME NOT NULL,
 			last_checked_at DATETIME NOT NULL,
 			last_used_at DATETIME NOT NULL,
+			credit_limit INTEGER NOT NULL DEFAULT 0,
+			credit_used INTEGER NOT NULL DEFAULT 0,
 			raw_key TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE TABLE IF NOT EXISTS requests (
@@ -435,6 +439,19 @@ func (s *Store) migrate() error {
 			updated_at DATETIME NOT NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS google_free_models_cache (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			context_length INTEGER NOT NULL DEFAULT 0,
+			max_output INTEGER NOT NULL DEFAULT 0,
+			type TEXT NOT NULL DEFAULT '',
+			features TEXT NOT NULL DEFAULT '',
+			modalities TEXT NOT NULL DEFAULT '',
+			input_price REAL NOT NULL DEFAULT 0,
+			output_price REAL NOT NULL DEFAULT 0,
+			description TEXT NOT NULL DEFAULT '',
+			updated_at DATETIME NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS oneminai_models_cache (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			context_length INTEGER NOT NULL DEFAULT 0,
@@ -548,6 +565,8 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN freeze_count INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE model_usage ADD COLUMN frozen_until TEXT NOT NULL DEFAULT '';`)
 	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN usage_day TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN credit_limit INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN credit_used INTEGER NOT NULL DEFAULT 0;`)
 	// ponytail: 10 запросов/аккаунт/сутки — подтверждённый лимит AIHubMix.
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
 	_, _ = s.db.Exec(`UPDATE ` + "`keys`" + ` SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
@@ -558,7 +577,7 @@ func (s *Store) migrate() error {
 	today := UTCDay(time.Now())
 	_, _ = s.db.Exec(`UPDATE `+"`keys`"+` SET usage_day = substr(last_used_at, 1, 10) WHERE usage_day = '' AND substr(last_used_at, 1, 10) = ?`, today)
 	_, _ = s.db.Exec(`UPDATE `+"`keys`"+` SET usage_today = 0, usage_day = ?, status = CASE WHEN status = 'day_exhausted' THEN 'active' ELSE status END WHERE usage_day <> ?`, today, today)
-	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google');`)
+	_, _ = s.db.Exec(`INSERT OR IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google'), ('1minai');`)
 
 	return nil
 }
@@ -1236,10 +1255,12 @@ func (s *Store) UpdateKey(k *DBKey, provider string) error {
 			cooldown_until = ?,
 			last_checked_at = ?,
 			last_used_at = ?
+			, credit_limit = ?
+			, credit_used = ?
 		WHERE key_hash = ? AND provider = ?
 	`, k.Status, k.LimitRemaining, k.UsageToday, k.UsageDay, k.MaxLimit,
 		boolInt(k.IsFreeTier), k.RateLimitReq, k.RateLimitInterval,
-		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.KeyHash, provider)
+		k.CooldownUntil, k.LastCheckedAt, k.LastUsedAt, k.CreditLimit, k.CreditUsed, k.KeyHash, provider)
 	return err
 }
 
@@ -1247,7 +1268,7 @@ func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 	rows, err := s.db.Query(`
 		SELECT key_hash, masked_key, status, limit_remaining, usage_today, usage_day, max_limit,
 		       is_free_tier, rate_limit_req, rate_limit_interval, cooldown_until, 
-		       last_checked_at, last_used_at, raw_key
+		       last_checked_at, last_used_at, credit_limit, credit_used, raw_key
 		FROM `+"`keys`"+`
 		WHERE provider = ?
 	`, provider)
@@ -1263,7 +1284,7 @@ func (s *Store) GetKeys(provider string) ([]*DBKey, error) {
 		err := rows.Scan(
 			&k.KeyHash, &k.MaskedKey, &k.Status, &k.LimitRemaining, &k.UsageToday, &k.UsageDay, &k.MaxLimit,
 			&isFree, &k.RateLimitReq, &k.RateLimitInterval, &k.CooldownUntil,
-			&k.LastCheckedAt, &k.LastUsedAt, &k.RawKey,
+			&k.LastCheckedAt, &k.LastUsedAt, &k.CreditLimit, &k.CreditUsed, &k.RawKey,
 		)
 		if err != nil {
 			return nil, err
@@ -1529,6 +1550,45 @@ func (s *Store) GetCachedGoogleFreeModels() ([]DBModel, error) {
 	return res, nil
 }
 
+func (s *Store) CacheOneMinAIModels(models []DBModel) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM oneminai_models_cache"); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO oneminai_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, m := range models {
+		if _, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.Description, m.UpdatedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetCachedOneMinAIModels() ([]DBModel, error) {
+	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM oneminai_models_cache ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var res []DBModel
+	for rows.Next() {
+		m := DBModel{}
+		if err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.Description, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		res = append(res, m)
+	}
+	return res, rows.Err()
+}
+
 // Stats helper structures
 type GeneralStats struct {
 	TotalRequests int64 `json:"total_requests"`
@@ -1558,6 +1618,8 @@ type KeyUsageStats struct {
 	ErrorRequests int64     `json:"error_requests"`
 	CooldownUntil time.Time `json:"cooldown_until"`
 	LastUsedAt    time.Time `json:"last_used_at"`
+	CreditLimit   int64     `json:"credit_limit"`
+	CreditUsed    int64     `json:"credit_used"`
 }
 
 func (s *Store) GetGeneralStats(provider string) (*GeneralStats, error) {
@@ -1642,6 +1704,8 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 			k.max_limit, 
 			k.cooldown_until,
 			k.last_used_at,
+			k.credit_limit,
+			k.credit_used,
 			COUNT(r.id) as total_reqs,
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) as err_reqs
 		FROM `+"`keys`"+` k
@@ -1660,7 +1724,7 @@ func (s *Store) GetKeyUsageStats(provider string) ([]KeyUsageStats, error) {
 		k := KeyUsageStats{}
 		var totalReqs, errReqs sql.NullInt64
 		err := rows.Scan(
-			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil, &k.LastUsedAt,
+			&k.MaskedKey, &k.KeyHash, &k.Status, &k.TodayUsage, &k.Limit, &k.CooldownUntil, &k.LastUsedAt, &k.CreditLimit, &k.CreditUsed,
 			&totalReqs, &errReqs,
 		)
 		if err != nil {

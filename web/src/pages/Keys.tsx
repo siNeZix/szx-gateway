@@ -127,6 +127,17 @@ export default function Keys() {
           )
         },
       },
+      ...(provider === '1minai' ? [{
+        id: 'credits',
+        header: 'Кредиты',
+        accessorFn: (k: KeyUsageStats) => k.credit_left,
+        cell: (info: { row: { original: KeyUsageStats } }) => {
+          const k = info.row.original
+          if (k.credit_limit <= 0) return <span className="text-slate-600">Нет данных</span>
+          const low = k.credit_left <= Math.max(1, k.credit_limit * 0.1)
+          return <span className={`tabular-nums ${low ? 'text-rose-400' : 'text-emerald-400'}`}>{k.credit_left}/{k.credit_limit}</span>
+        },
+      }] : []),
       {
         accessorKey: 'total_requests',
         header: 'Всего',

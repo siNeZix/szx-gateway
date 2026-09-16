@@ -17,6 +17,7 @@ type Config struct {
 	ListenAddr           string
 	AIHubMixListenAddr   string
 	GoogleListenAddr     string
+	OneMinAIListenAddr   string
 	RankingRefresh       time.Duration
 	KeyCheckTTL          time.Duration
 	KeyCheckRate         int
@@ -45,6 +46,7 @@ func Load() *Config {
 	flag.StringVar(&cfg.ListenAddr, "listen", getEnv("LISTEN_ADDR", ":8080"), "Listen address for the gateway server")
 	flag.StringVar(&cfg.AIHubMixListenAddr, "aihubmix-listen", getEnv("AIHUBMIX_LISTEN_ADDR", ":8081"), "Listen address for the AIHubMix proxy server")
 	flag.StringVar(&cfg.GoogleListenAddr, "google-listen", getEnv("GOOGLE_LISTEN_ADDR", ":8082"), "Listen address for the Google AI Studio proxy server")
+	flag.StringVar(&cfg.OneMinAIListenAddr, "1minai-listen", getEnv("ONE_MIN_AI_LISTEN_ADDR", ":8083"), "Listen address for the 1min.AI proxy server")
 
 	rankingRefreshStr := flag.String("ranking-refresh", getEnv("RANKING_REFRESH", "1h"), "Interval for refreshing Shir-Man model rankings")
 	keyCheckTTLStr := flag.String("key-ttl", getEnv("KEY_CHECK_TTL", "1h"), "How long key verification remains valid")

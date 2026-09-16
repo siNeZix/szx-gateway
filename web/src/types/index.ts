@@ -1,7 +1,7 @@
 // Контракты API. Ручная синхронизация с Go-структурами в internal/store/sqlite.go
 // и internal/web/api.go. Единый конверт { data, error } разворачивается в apiClient.
 
-export type Provider = 'openrouter' | 'aihubmix' | 'google'
+export type Provider = 'openrouter' | 'aihubmix' | 'google' | '1minai'
 
 export interface GeneralStats {
   total_requests: number
@@ -32,6 +32,9 @@ export interface KeyUsageStats {
   cooldown_left: string
   cooldown_until: string // ISO-время; пусто если never
   last_used_at: string // ISO-время; пусто если never
+  credit_limit: number
+  credit_used: number
+  credit_left: number
 }
 
 export interface DailyLimitsInfo {

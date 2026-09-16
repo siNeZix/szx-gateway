@@ -63,6 +63,8 @@ func (kp *KeyPool) Load() error {
 			existing.IsFreeTier = dbK.IsFreeTier
 			existing.RateLimitReq = dbK.RateLimitReq
 			existing.RateLimitInterval = dbK.RateLimitInterval
+			existing.CreditLimit = dbK.CreditLimit
+			existing.CreditUsed = dbK.CreditUsed
 			existing.CooldownUntil = dbK.CooldownUntil
 			existing.LastCheckedAt = dbK.LastCheckedAt
 			existing.LastUsedAt = dbK.LastUsedAt
@@ -160,7 +162,7 @@ func (kp *KeyPool) GetBestKeyExcluding(exclude map[string]bool) (*KeyState, erro
 			k.mu.Lock()
 			usage := k.UsageToday
 			k.mu.Unlock()
-			if best == nil || usage < bestUsage {
+			if best == nil || usage < bestUsage || (kp.provider == "1minai" && usage == bestUsage && keyBalance(k) > keyBalance(best)) {
 				best, bestUsage = k, usage
 			}
 		}
@@ -175,6 +177,17 @@ func (kp *KeyPool) GetBestKeyExcluding(exclude map[string]bool) (*KeyState, erro
 		// Lost the race to another goroutine; exclude and pick again.
 		tried[best] = true
 	}
+}
+
+// keyBalance returns the last known account credit balance. Unknown balances
+// sort after known depleted balances while preserving normal usage rotation.
+func keyBalance(k *KeyState) int64 {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.CreditLimit <= 0 {
+		return 1<<62 - 1
+	}
+	return k.CreditLimit - k.CreditUsed
 }
 
 func (kp *KeyPool) GetBestKeyForModel(model string) (*KeyState, error) {

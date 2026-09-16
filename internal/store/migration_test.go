@@ -29,8 +29,8 @@ func TestCopyTableReplacesExistingRows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("copy run %d: %v", run, err)
 		}
-		if copied != 3 {
-			t.Fatalf("copy run %d copied %d rows, want 3", run, copied)
+		if copied != 4 {
+			t.Fatalf("copy run %d copied %d rows, want 4", run, copied)
 		}
 	}
 

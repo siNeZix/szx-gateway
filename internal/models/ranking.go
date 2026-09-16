@@ -87,12 +87,14 @@ type RankingManager struct {
 	aihubmixURL   string
 	aihubmixInfo  string
 	googleURL     string
+	oneMinAIURL   string
 
 	mu           sync.RWMutex
 	models       []store.DBModel
 	freeModels   []store.DBModel
 	aihubmixFree []store.DBModel
 	googleFree   []store.DBModel
+	oneMinAI     []store.DBModel
 	fallbackID   string
 }
 
@@ -105,6 +107,7 @@ func NewRankingManager(s *store.Store, refreshInterval time.Duration) *RankingMa
 		aihubmixURL:   "https://aihubmix.com/v1/models",
 		aihubmixInfo:  "https://aihubmix.com/api/v1/models?type=llm",
 		googleURL:     "https://generativelanguage.googleapis.com/v1beta/models",
+		oneMinAIURL:   "https://api.1min.ai/models?feature=UNIFY_CHAT_WITH_AI",
 		fallbackID:    "openrouter/free",
 	}
 }
@@ -135,6 +138,12 @@ func (rm *RankingManager) Start() {
 		rm.mu.Unlock()
 		log.Printf("Loaded %d Google free models from database cache", len(cachedGoogle))
 	}
+	if cachedOneMinAI, err := rm.store.GetCachedOneMinAIModels(); err == nil && len(cachedOneMinAI) > 0 {
+		rm.mu.Lock()
+		rm.oneMinAI = cachedOneMinAI
+		rm.mu.Unlock()
+		log.Printf("Loaded %d 1min.AI models from database cache", len(cachedOneMinAI))
+	}
 
 	// Initial fetch
 	if err := rm.fetch(); err != nil {
@@ -148,6 +157,9 @@ func (rm *RankingManager) Start() {
 	}
 	if err := rm.fetchGoogleFree(); err != nil {
 		log.Printf("Initial Google free models fetch failed: %v", err)
+	}
+	if err := rm.fetchOneMinAIModels(); err != nil {
+		log.Printf("Initial 1min.AI models fetch failed: %v", err)
 	}
 
 	// Periodical background fetch
@@ -166,6 +178,9 @@ func (rm *RankingManager) Start() {
 			}
 			if err := rm.fetchGoogleFree(); err != nil {
 				log.Printf("Google free models fetch failed: %v", err)
+			}
+			if err := rm.fetchOneMinAIModels(); err != nil {
+				log.Printf("1min.AI models fetch failed: %v", err)
 			}
 		}
 	}()
@@ -537,4 +552,85 @@ func (rm *RankingManager) GetGoogleFreeModels() []store.DBModel {
 	res := make([]store.DBModel, len(rm.googleFree))
 	copy(res, rm.googleFree)
 	return res
+}
+
+type oneMinAIModelsResponse struct {
+	Models []struct {
+		ModelID        string `json:"modelId"`
+		Name           string `json:"name"`
+		Status         string `json:"status"`
+		Information    string `json:"information"`
+		UpdatedAt      string `json:"updatedAt"`
+		CreditMetadata struct {
+			Context        int64 `json:"CONTEXT"`
+			MaxOutputToken int64 `json:"MAX_OUTPUT_TOKEN"`
+		} `json:"creditMetadata"`
+		Modality struct {
+			Input  []string `json:"INPUT"`
+			Output []string `json:"OUTPUT"`
+		} `json:"modality"`
+	} `json:"models"`
+}
+
+// fetchOneMinAIModels loads 1min.AI's complete UNIFY_CHAT_WITH_AI catalogue.
+func (rm *RankingManager) fetchOneMinAIModels() error {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(rm.oneMinAIURL)
+	if err != nil {
+		return fmt.Errorf("fetch 1min.AI models: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("1min.AI models returned %d", resp.StatusCode)
+	}
+	var data oneMinAIModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return fmt.Errorf("decode 1min.AI models: %w", err)
+	}
+	if len(data.Models) == 0 {
+		return fmt.Errorf("1min.AI returned no chat models")
+	}
+	models := make([]store.DBModel, 0, len(data.Models))
+	for _, model := range data.Models {
+		if model.ModelID == "" || !strings.EqualFold(model.Status, "ACTIVE") {
+			continue
+		}
+		updatedAt, err := time.Parse(time.RFC3339, model.UpdatedAt)
+		if err != nil {
+			updatedAt = time.Now().UTC()
+		}
+		models = append(models, store.DBModel{
+			ID: model.ModelID, Name: model.Name, ContextLength: model.CreditMetadata.Context,
+			MaxOutput: model.CreditMetadata.MaxOutputToken, Type: "chat",
+			Modalities:  strings.Join(model.Modality.Input, "+") + "->" + strings.Join(model.Modality.Output, "+"),
+			Description: model.Information, UpdatedAt: updatedAt,
+		})
+	}
+	if len(models) == 0 {
+		return fmt.Errorf("1min.AI returned no active chat models")
+	}
+	rm.mu.Lock()
+	rm.oneMinAI = models
+	rm.mu.Unlock()
+	if err := rm.store.CacheOneMinAIModels(models); err != nil {
+		return fmt.Errorf("cache 1min.AI models: %w", err)
+	}
+	return nil
+}
+
+func (rm *RankingManager) GetOneMinAIModels() []store.DBModel {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	res := make([]store.DBModel, len(rm.oneMinAI))
+	copy(res, rm.oneMinAI)
+	return res
+}
+
+func (rm *RankingManager) IsOneMinAIModel(modelID string) bool {
+	for _, model := range rm.GetOneMinAIModels() {
+		if model.ID == modelID {
+			return true
+		}
+	}
+	return false
 }

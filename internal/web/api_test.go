@@ -103,7 +103,7 @@ func TestAPI_Contract(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
 
-	// 1. GET /api/v2/providers → массив с двумя провайдерами.
+	// 1. GET /api/v2/providers → массив известных провайдеров.
 	env := doJSON(t, srv, "GET", "/api/v2/providers", nil)
 	if env.Error != "" {
 		t.Fatalf("providers: %s", env.Error)
@@ -112,12 +112,12 @@ func TestAPI_Contract(t *testing.T) {
 	if err := json.Unmarshal(env.Data, &providers); err != nil {
 		t.Fatalf("unmarshal providers: %v", err)
 	}
-	if len(providers) != 3 {
-		t.Fatalf("expected 3 providers, got %d", len(providers))
+	if len(providers) != 4 {
+		t.Fatalf("expected 4 providers, got %d", len(providers))
 	}
 	for _, p := range providers {
 		id, _ := p["id"].(string)
-		if id != "openrouter" && id != "aihubmix" && id != "google" {
+		if id != "openrouter" && id != "aihubmix" && id != "google" && id != "1minai" {
 			t.Errorf("unexpected provider id: %v", p["id"])
 		}
 	}

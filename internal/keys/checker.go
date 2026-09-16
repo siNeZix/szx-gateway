@@ -166,6 +166,18 @@ func (kc *KeyChecker) findKeyToVerify() *KeyState {
 }
 
 func (kc *KeyChecker) CheckKey(ctx context.Context, ks *KeyState) {
+	// 1min.AI has no documented non-billable key or balance endpoint. Do not
+	// spend account credits merely to validate a key; requests validate it.
+	if kc.providerType == "1minai" {
+		ks.mu.Lock()
+		ks.LastCheckedAt = time.Now()
+		if ks.Status == "unchecked" {
+			ks.Status = "active"
+		}
+		ks.mu.Unlock()
+		kc.pool.SyncKeyToDB(ks)
+		return
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", kc.checkURL, nil)
 	if err != nil {
 		log.Printf("Failed to create verification request: %v", err)
