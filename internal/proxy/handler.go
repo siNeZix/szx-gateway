@@ -56,8 +56,12 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
+		ph.handleModels(w, r)
+		return
+	}
 
-	// 1. Verify Gateway Client Token
+	// Verify Gateway Client Token for all non-catalog routes.
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		writeProxyError(w, http.StatusUnauthorized, "Missing or invalid Authorization header")
@@ -70,11 +74,6 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Route request
-	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
-		ph.handleModels(w, r)
-		return
-	}
-
 	if r.URL.Path == "/v1/chat/completions" && r.Method == http.MethodPost {
 		ph.handleChatCompletions(w, r)
 		return

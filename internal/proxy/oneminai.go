@@ -41,13 +41,15 @@ func (h *OneMinAIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+		h.models(w)
+		return
+	}
 	if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") != h.cfg.GatewayToken {
 		writeProxyError(w, http.StatusUnauthorized, "Unauthorized: invalid gateway token")
 		return
 	}
 	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
-		h.models(w)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
 		h.chat(w, r)
 	default:

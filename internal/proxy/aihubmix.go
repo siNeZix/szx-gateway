@@ -96,6 +96,10 @@ func (h *AihubmixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
+		h.handleModels(w, r)
+		return
+	}
 
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -105,11 +109,6 @@ func (h *AihubmixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	clientToken := strings.TrimPrefix(authHeader, "Bearer ")
 	if clientToken != h.cfg.GatewayToken {
 		writeProxyError(w, http.StatusUnauthorized, "Unauthorized: invalid gateway token")
-		return
-	}
-
-	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
-		h.handleModels(w, r)
 		return
 	}
 

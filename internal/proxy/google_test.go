@@ -1,8 +1,22 @@
 package proxy
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"szx-gateway/internal/models"
 )
+
+func TestGoogleModelsArePublic(t *testing.T) {
+	h := &GoogleHandler{rankingMgr: &models.RankingManager{}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /v1/models without token = %d, want %d", res.Code, http.StatusOK)
+	}
+}
 
 func TestOpenAIToGemini_BasicConversion(t *testing.T) {
 	temp := 0.7
