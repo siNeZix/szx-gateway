@@ -20,6 +20,27 @@ import (
 
 const oneMinAITarget = "https://api.1min.ai/api/chat-with-ai"
 
+type oneMinAIErrorAction int
+
+const (
+	oneMinAIRetryTemporary oneMinAIErrorAction = iota
+	oneMinAIRetryRateLimited
+	oneMinAIInvalidateKey
+)
+
+// classifyOneMinAIError uses only documented API signals. 1min.AI does not
+// document a billing-credit exhaustion error, so unknown failures stay temporary.
+func classifyOneMinAIError(status int) oneMinAIErrorAction {
+	switch status {
+	case http.StatusUnauthorized:
+		return oneMinAIInvalidateKey
+	case http.StatusTooManyRequests:
+		return oneMinAIRetryRateLimited
+	default:
+		return oneMinAIRetryTemporary
+	}
+}
+
 type OneMinAIHandler struct {
 	cfg       *config.Config
 	store     *store.Store
@@ -131,16 +152,15 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode >= 400 {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			message := strings.ToLower(string(errBody))
-			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			switch classifyOneMinAIError(resp.StatusCode) {
+			case oneMinAIInvalidateKey:
 				key.SetStatus("invalid")
-			} else if strings.Contains(message, "credit") && (strings.Contains(message, "insufficient") || strings.Contains(message, "limit") || strings.Contains(message, "exhaust")) {
-				key.SetStatus("credit_exhausted")
-			} else if resp.StatusCode == http.StatusTooManyRequests {
+			case oneMinAIRetryRateLimited:
 				key.RollbackUsage()
 				key.SetCooldown(time.Minute, "rate_limited")
-			} else if resp.StatusCode >= 500 {
+			default:
 				key.RollbackUsage()
+				key.SetCooldown(30*time.Second, "")
 			}
 			h.pool.SyncKeyToDB(key)
 			h.log(key, in.Model, resp.StatusCode, string(errBody), start, in.Stream)
@@ -181,6 +201,10 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		key.RollbackUsage()
+		key.SetCooldown(30*time.Second, "")
+		h.pool.SyncKeyToDB(key)
+		h.log(key, model, http.StatusBadGateway, "failed to read response from upstream", start, false)
 		writeProxyError(w, http.StatusBadGateway, "Failed to read response from upstream")
 		return
 	}
@@ -198,10 +222,9 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	}
 	if err := json.Unmarshal(body, &record); err != nil || record.AIRecord.Status != "SUCCESS" {
 		key.RollbackUsage()
-		if strings.Contains(strings.ToLower(string(body)), "credit") {
-			key.SetStatus("credit_exhausted")
-		}
+		key.SetCooldown(30*time.Second, "")
 		h.pool.SyncKeyToDB(key)
+		h.log(key, model, http.StatusBadGateway, string(body), start, false)
 		writeProxyError(w, http.StatusBadGateway, "1min.AI did not return a successful chat result")
 		return
 	}
