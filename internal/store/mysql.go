@@ -34,7 +34,7 @@ func (s *Store) migrateMySQL() error {
 		`CREATE TABLE IF NOT EXISTS free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS aihubmix_free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS google_free_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
-		`CREATE TABLE IF NOT EXISTS oneminai_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+		`CREATE TABLE IF NOT EXISTS oneminai_models_cache (id VARCHAR(512) PRIMARY KEY, name TEXT NOT NULL, context_length BIGINT NOT NULL DEFAULT 0, max_output BIGINT NOT NULL DEFAULT 0, type VARCHAR(128) NOT NULL DEFAULT '', features TEXT NOT NULL, modalities TEXT NOT NULL, input_price DOUBLE NOT NULL DEFAULT 0, output_price DOUBLE NOT NULL DEFAULT 0, price_unit TEXT NOT NULL, price_tiers TEXT NOT NULL, description TEXT NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS model_usage (
 			provider VARCHAR(32) NOT NULL, key_hash VARCHAR(64) NOT NULL, model VARCHAR(512) NOT NULL, day VARCHAR(10) NOT NULL,
 			requests BIGINT NOT NULL DEFAULT 0, tokens BIGINT NOT NULL DEFAULT 0, exhausted TINYINT NOT NULL DEFAULT 0,
@@ -60,6 +60,8 @@ func (s *Store) migrateMySQL() error {
 	}
 	_, _ = s.db.Exec(`ALTER TABLE ` + q("keys") + ` ADD COLUMN credit_limit BIGINT NOT NULL DEFAULT 0`)
 	_, _ = s.db.Exec(`ALTER TABLE ` + q("keys") + ` ADD COLUMN credit_used BIGINT NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE oneminai_models_cache ADD COLUMN price_unit TEXT NOT NULL DEFAULT ''`)
+	_, _ = s.db.Exec(`ALTER TABLE oneminai_models_cache ADD COLUMN price_tiers TEXT NOT NULL DEFAULT ''`)
 	_, err := s.db.Exec(`INSERT IGNORE INTO proxy_settings (provider) VALUES ('openrouter'), ('aihubmix'), ('google'), ('1minai')`)
 	return err
 }

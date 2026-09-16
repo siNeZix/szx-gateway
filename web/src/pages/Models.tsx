@@ -3,6 +3,23 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useProvider } from '../providers/provider'
 
+type PriceTier = { input: number; output: number; threshold: number }
+
+function compact(value: number) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}кк`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2).replace(/\.?0+$/, '')}к`
+  return value.toFixed(2).replace(/\.?0+$/, '')
+}
+
+function priceTiers(value: string) {
+  try {
+    const tiers = JSON.parse(value) as PriceTier[]
+    return tiers.map((tier) => `контекст >=${compact(tier.threshold)}: ${compact(tier.input)} in / ${compact(tier.output)} out`).join('\n')
+  } catch {
+    return ''
+  }
+}
+
 export default function Models() {
   const { provider } = useProvider()
   const { data, isLoading } = useQuery({
@@ -14,6 +31,7 @@ export default function Models() {
 
   const free = data?.free_models ?? []
   const top = data?.top_models ?? []
+  const hasCreditPrices = provider === '1minai'
 
   const filteredFree = useMemo(() => {
     const q = search.toLowerCase()
@@ -40,7 +58,7 @@ export default function Models() {
 
   const copyMarkdown = () => {
     const lines = [
-      '| id | context | max_output | modalities | features | input_price | output_price |',
+      `| id | context | max_output | modalities | features | ${hasCreditPrices ? 'input credits / 1 млн tokens' : 'input_price'} | ${hasCreditPrices ? 'output credits / 1 млн tokens' : 'output_price'} |`,
       '| --- | ---: | ---: | --- | --- | ---: | ---: |',
     ]
     filteredFree.forEach((m) => {
@@ -124,8 +142,8 @@ export default function Models() {
                   <th className="px-3 py-2 text-right">Context</th>
                   <th className="px-3 py-2 text-right">Max Output</th>
                   <th className="px-3 py-2 text-left">Modalities</th>
-                  <th className="px-3 py-2 text-right">In</th>
-                  <th className="px-3 py-2 text-right">Out</th>
+                  <th className="px-3 py-2 text-right">{hasCreditPrices ? 'In credits / 1 млн' : 'In'}</th>
+                  <th className="px-3 py-2 text-right">{hasCreditPrices ? 'Out credits / 1 млн' : 'Out'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -144,10 +162,14 @@ export default function Models() {
                       {m.modalities}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-400">
-                      {m.input_price}
+                      <span title={hasCreditPrices ? priceTiers(m.price_tiers) || undefined : undefined}>
+                        {hasCreditPrices ? compact(m.input_price) : m.input_price}
+                      </span>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-400">
-                      {m.output_price}
+                      <span title={hasCreditPrices ? priceTiers(m.price_tiers) || undefined : undefined}>
+                        {hasCreditPrices ? compact(m.output_price) : m.output_price}
+                      </span>
                     </td>
                   </tr>
                 ))}

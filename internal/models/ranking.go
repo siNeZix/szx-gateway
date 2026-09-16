@@ -562,14 +562,27 @@ type oneMinAIModelsResponse struct {
 		Information    string `json:"information"`
 		UpdatedAt      string `json:"updatedAt"`
 		CreditMetadata struct {
-			Context        int64 `json:"CONTEXT"`
-			MaxOutputToken int64 `json:"MAX_OUTPUT_TOKEN"`
+			Context          int64   `json:"CONTEXT"`
+			MaxOutputToken   int64   `json:"MAX_OUTPUT_TOKEN"`
+			Input            float64 `json:"INPUT"`
+			Output           float64 `json:"OUTPUT"`
+			LongContextTiers []struct {
+				Input     float64 `json:"INPUT"`
+				Output    float64 `json:"OUTPUT"`
+				Threshold int64   `json:"THRESHOLD"`
+			} `json:"LONG_CONTEXT_TIERS"`
 		} `json:"creditMetadata"`
 		Modality struct {
 			Input  []string `json:"INPUT"`
 			Output []string `json:"OUTPUT"`
 		} `json:"modality"`
 	} `json:"models"`
+}
+
+type oneMinAIPriceTier struct {
+	Input     float64 `json:"input"`
+	Output    float64 `json:"output"`
+	Threshold int64   `json:"threshold"`
 }
 
 // fetchOneMinAIModels loads 1min.AI's complete UNIFY_CHAT_WITH_AI catalogue.
@@ -599,11 +612,20 @@ func (rm *RankingManager) fetchOneMinAIModels() error {
 		if err != nil {
 			updatedAt = time.Now().UTC()
 		}
+		tiers := make([]oneMinAIPriceTier, 0, len(model.CreditMetadata.LongContextTiers))
+		for _, tier := range model.CreditMetadata.LongContextTiers {
+			tiers = append(tiers, oneMinAIPriceTier{Input: tier.Input * 1000, Output: tier.Output * 1000, Threshold: tier.Threshold})
+		}
+		tiersJSON, err := json.Marshal(tiers)
+		if err != nil {
+			return fmt.Errorf("encode 1min.AI price tiers for %s: %w", model.ModelID, err)
+		}
 		models = append(models, store.DBModel{
 			ID: model.ModelID, Name: model.Name, ContextLength: model.CreditMetadata.Context,
 			MaxOutput: model.CreditMetadata.MaxOutputToken, Type: "chat",
-			Modalities:  strings.Join(model.Modality.Input, "+") + "->" + strings.Join(model.Modality.Output, "+"),
-			Description: model.Information, UpdatedAt: updatedAt,
+			Modalities: strings.Join(model.Modality.Input, "+") + "->" + strings.Join(model.Modality.Output, "+"),
+			InputPrice: model.CreditMetadata.Input * 1000, OutputPrice: model.CreditMetadata.Output * 1000,
+			PriceUnit: "credits_per_1m_tokens", PriceTiers: string(tiersJSON), Description: model.Information, UpdatedAt: updatedAt,
 		})
 	}
 	if len(models) == 0 {

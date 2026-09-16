@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func TestFetchOneMinAIModels(t *testing.T) {
 		if r.URL.Query().Get("feature") != "UNIFY_CHAT_WITH_AI" {
 			t.Errorf("feature query = %q", r.URL.Query().Get("feature"))
 		}
-		fmt.Fprint(w, `{"models":[{"modelId":"gpt-4o-mini","name":"GPT-4o mini","status":"ACTIVE","information":"Fast model","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{"CONTEXT":128000,"MAX_OUTPUT_TOKEN":16384},"modality":{"INPUT":["text","image"],"OUTPUT":["text"]}},{"modelId":"retired-model","name":"Retired","status":"INACTIVE","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{},"modality":{}}],"total":2}`)
+		fmt.Fprint(w, `{"models":[{"modelId":"gpt-4o-mini","name":"GPT-4o mini","status":"ACTIVE","information":"Fast model","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{"CONTEXT":128000,"MAX_OUTPUT_TOKEN":16384,"INPUT":0.15,"OUTPUT":0.6,"LONG_CONTEXT_TIERS":[{"INPUT":0.3,"OUTPUT":1.2,"THRESHOLD":64000}]},"modality":{"INPUT":["text","image"],"OUTPUT":["text"]}},{"modelId":"retired-model","name":"Retired","status":"INACTIVE","updatedAt":"2026-01-01T00:00:00Z","creditMetadata":{},"modality":{}}],"total":2}`)
 	}))
 	defer server.Close()
 
@@ -139,7 +140,7 @@ func TestFetchOneMinAIModels(t *testing.T) {
 		t.Fatalf("fetchOneMinAIModels: %v", err)
 	}
 	models := rm.GetOneMinAIModels()
-	if len(models) != 1 || !rm.IsOneMinAIModel("gpt-4o-mini") || rm.IsOneMinAIModel("retired-model") || models[0].ContextLength != 128000 || models[0].MaxOutput != 16384 {
+	if len(models) != 1 || !rm.IsOneMinAIModel("gpt-4o-mini") || rm.IsOneMinAIModel("retired-model") || models[0].ContextLength != 128000 || models[0].MaxOutput != 16384 || models[0].InputPrice != 150 || models[0].OutputPrice != 600 || models[0].PriceUnit != "credits_per_1m_tokens" || !strings.Contains(models[0].PriceTiers, `"threshold":64000`) || !strings.Contains(models[0].PriceTiers, `"input":300`) {
 		t.Fatalf("unexpected 1min.AI models: %+v", models)
 	}
 	cached, err := s.GetCachedOneMinAIModels()

@@ -125,6 +125,8 @@ type DBModel struct {
 	Modalities    string    `json:"modalities"`
 	InputPrice    float64   `json:"input_price"`
 	OutputPrice   float64   `json:"output_price"`
+	PriceUnit     string    `json:"price_unit"`
+	PriceTiers    string    `json:"price_tiers"`
 	Description   string    `json:"description"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
@@ -422,6 +424,8 @@ func (s *Store) migrate() error {
 			modalities TEXT NOT NULL DEFAULT '',
 			input_price REAL NOT NULL DEFAULT 0,
 			output_price REAL NOT NULL DEFAULT 0,
+			price_unit TEXT NOT NULL DEFAULT '',
+			price_tiers TEXT NOT NULL DEFAULT '',
 			description TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME NOT NULL
 		);`,
@@ -567,6 +571,8 @@ func (s *Store) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN usage_day TEXT NOT NULL DEFAULT '';`)
 	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN credit_limit INTEGER NOT NULL DEFAULT 0;`)
 	_, _ = s.db.Exec(`ALTER TABLE ` + "`keys`" + ` ADD COLUMN credit_used INTEGER NOT NULL DEFAULT 0;`)
+	_, _ = s.db.Exec(`ALTER TABLE oneminai_models_cache ADD COLUMN price_unit TEXT NOT NULL DEFAULT '';`)
+	_, _ = s.db.Exec(`ALTER TABLE oneminai_models_cache ADD COLUMN price_tiers TEXT NOT NULL DEFAULT '';`)
 	// ponytail: 10 запросов/аккаунт/сутки — подтверждённый лимит AIHubMix.
 	// Умные per-model лимиты отключены, возвращаемся к единому MaxLimit=10.
 	_, _ = s.db.Exec(`UPDATE ` + "`keys`" + ` SET max_limit = 10 WHERE provider = 'aihubmix' AND (max_limit = 0 OR max_limit IS NULL);`)
@@ -1559,13 +1565,13 @@ func (s *Store) CacheOneMinAIModels(models []DBModel) error {
 	if _, err := tx.Exec("DELETE FROM oneminai_models_cache"); err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO oneminai_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO oneminai_models_cache (id, name, context_length, max_output, type, features, modalities, input_price, output_price, price_unit, price_tiers, description, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, m := range models {
-		if _, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.Description, m.UpdatedAt); err != nil {
+		if _, err := stmt.Exec(m.ID, m.Name, m.ContextLength, m.MaxOutput, m.Type, m.Features, m.Modalities, m.InputPrice, m.OutputPrice, m.PriceUnit, m.PriceTiers, m.Description, m.UpdatedAt); err != nil {
 			return err
 		}
 	}
@@ -1573,7 +1579,7 @@ func (s *Store) CacheOneMinAIModels(models []DBModel) error {
 }
 
 func (s *Store) GetCachedOneMinAIModels() ([]DBModel, error) {
-	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, description, updated_at FROM oneminai_models_cache ORDER BY id ASC`)
+	rows, err := s.db.Query(`SELECT id, name, context_length, max_output, type, features, modalities, input_price, output_price, price_unit, price_tiers, description, updated_at FROM oneminai_models_cache ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1581,7 +1587,7 @@ func (s *Store) GetCachedOneMinAIModels() ([]DBModel, error) {
 	var res []DBModel
 	for rows.Next() {
 		m := DBModel{}
-		if err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.Description, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.ContextLength, &m.MaxOutput, &m.Type, &m.Features, &m.Modalities, &m.InputPrice, &m.OutputPrice, &m.PriceUnit, &m.PriceTiers, &m.Description, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		res = append(res, m)

@@ -86,6 +86,8 @@ export interface DBModel {
   modalities: string
   input_price: number
   output_price: number
+  price_unit: string
+  price_tiers: string
   description: string
   updated_at: string
 }
