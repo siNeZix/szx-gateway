@@ -1,4 +1,4 @@
-.PHONY: build run dev clean fmt tidy migrate-sqlite-to-mysql
+.PHONY: build run dev clean fmt tidy migrate-sqlite-to-mysql migrate-sqlite-to-postgres postgres-debug
 
 BUILD_DIR=build
 BINARY_NAME=gateway.exe
@@ -13,7 +13,7 @@ run: build
 	./$(BINARY_PATH)
 
 dev: build
-	powershell -NoProfile -ExecutionPolicy Bypass -Command "$$p = Start-Process -FilePath './$(BINARY_PATH)' -WorkingDirectory '.' -NoNewWindow -PassThru; try { for ($$i = 0; $$i -lt 60; $$i++) { if ($$p.HasExited) { throw 'gateway exited' }; try { $$c = [Net.Sockets.TcpClient]::new('127.0.0.1', 8080); $$c.Close(); break } catch { Start-Sleep -Milliseconds 500 } }; if ($$i -eq 60) { throw 'gateway did not open :8080' }; npm --prefix web run dev } finally { if ($$p -and -not $$p.HasExited) { Stop-Process -Id $$p.Id } }"
+	powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path '.env') { Get-Content '.env' | ForEach-Object { if ($$_ -match '^\s*([^#=\s]+)\s*=\s*(.*)\s*$$') { [Environment]::SetEnvironmentVariable($$matches[1], $$matches[2], 'Process') } } }; $$p = Start-Process -FilePath './$(BINARY_PATH)' -WorkingDirectory '.' -NoNewWindow -PassThru; try { for ($$i = 0; $$i -lt 60; $$i++) { if ($$p.HasExited) { throw 'gateway exited' }; try { $$c = [Net.Sockets.TcpClient]::new('127.0.0.1', 8080); $$c.Close(); break } catch { Start-Sleep -Milliseconds 500 } }; if ($$i -eq 60) { throw 'gateway did not open :8080' }; npm --prefix web run dev } finally { if ($$p -and -not $$p.HasExited) { Stop-Process -Id $$p.Id } }"
 
 clean:
 	if exist $(BUILD_DIR) rmdir /s /q $(BUILD_DIR)
@@ -27,3 +27,9 @@ tidy:
 
 migrate-sqlite-to-mysql:
 	go run ./cmd/migrate-sqlite-to-mysql -sqlite "$(SQLITE_PATH)" -mysql "$(DB_DSN)"
+
+migrate-sqlite-to-postgres:
+	go run ./cmd/migrate-sqlite-to-postgres -sqlite "$(SQLITE_PATH)" -postgres "$(DB_DSN)"
+
+postgres-debug:
+	go run ./cmd/postgres-debug $(ARGS)

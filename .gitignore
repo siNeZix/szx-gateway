@@ -22,7 +22,12 @@ accounts/api_keys.txt
 
 # Worktrees
 /.worktrees/
-.opencode/
+.opencode/*
+!.opencode/commands/
+!.opencode/commands/postgres-debug.md
+!.opencode/skills/
+!.opencode/skills/postgres-debug/
+!.opencode/skills/postgres-debug/SKILL.md
 
 # SPA build artifacts (встроенный UI генерится Vite, не коммитится)
 /internal/web/dist/*

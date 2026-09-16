@@ -4,12 +4,13 @@ This file contains instructions, conventions, and operational patterns for any A
 
 ## 🛠️ Stack & Architecture Overview
 - **Language:** Go (1.26.3)
-- **Database:** SQLite via pure Go driver (`modernc.org/sqlite`) - **Do not use CGO or any C-bound drivers.**
+- **Database:** PostgreSQL 16 is production backend via `github.com/jackc/pgx/v5`; SQLite via pure Go driver (`modernc.org/sqlite`) is available for local development. MySQL remains an optional legacy backend. Do not use CGO SQLite drivers.
 - **Routing:** Standard library `net/http` (no complex router/frameworks).
 - **Core Components:**
   - `cmd/gateway/main.go`: Entry point, lifecycle management, HTTP server orchestration, and graceful shutdown.
   - `internal/config`: Configurations via flags and environment variables.
-  - `internal/store`: Database layer for API keys, usage statistics, logs, and ranking.
+  - `internal/store`: Database layer for API keys, usage statistics, logs, ranking and SQLite migrations.
+  - `cmd/postgres-debug`: Internal read-only PostgreSQL diagnostics CLI for agents and developers.
   - `internal/keys`: 
     - `KeyPool`: Thread-safe pool managing key allocation, status rotation (`Active`, `Cooldown`, `Exhausted`, `Invalid`, `Disabled`), and minute/daily quotas.
     - `KeyChecker`: Background ticker worker that validates key active statuses/limits with OpenRouter `/api/v1/key` endpoint. Ignores `disabled` keys.
@@ -23,7 +24,7 @@ This file contains instructions, conventions, and operational patterns for any A
 - **Метод:** Прямой пуш исходников на прод `git push prod main`.
 - **Механизм:** На сервере настроен bare-репозиторий и хук `post-receive`, который чекаутит ветку `main` в рабочую папку и запускает локальную пересборку Docker-контейнера через `docker compose up -d --build`.
 - **Сборка:** Осуществляется на стороне сервера в легковесном Docker-контейнере. Зависимости кэшируются, мелкие правки деплоятся за считанные секунды.
-- **Хранение БД:** Файл базы данных SQLite хранится в примонтированной папке `./data/` на хосте, за счет чего данные полностью сохраняются при пересборках контейнера.
+  - **Хранение БД:** В production данные хранятся в PostgreSQL; SQLite-файл для локальной разработки хранится в `./data/`.
 
 ## 📜 Development Guidelines & Rules (Ponytail-Friendly)
 1. **Zero Over-Engineering:** Keep standard library solutions first. Do not add routing, ORM, or state-management packages. Use raw SQL/prepared statements inside `store.go`.
@@ -34,10 +35,20 @@ This file contains instructions, conventions, and operational patterns for any A
 6. **Add High-Value Tests only:** Code changes that modify the rotation logic or check criteria should be covered in `sqlite_test.go`, `state_test.go`, or `server_test.go`.
 7. **Language Constraint:** **ALWAYS respond in Russian.** All communication with the user must be in Russian only. Code comments can remain in English/Russian matching existing files, but explanations, summaries, and agent output must be Russian.
 
+## PostgreSQL Debug Policy
+
+- В production используется PostgreSQL. Для диагностики используй только `go run ./cmd/postgres-debug`.
+- Сначала выясни схему через `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()` или `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '<table>'`, затем делай минимальный запрос, проверяющий гипотезу.
+- CLI берёт полный `DB_DSN`; он намеренно может читать все таблицы, в том числе `keys.raw_key` и proxy credentials. Значения считать секретами: не копировать в ответ, документацию, коммиты, логи, issues и внешние tool calls.
+- Разрешены `SELECT`, CTE с финальным `SELECT` и `EXPLAIN`. CLI блокирует изменяющие запросы и запускает запрос внутри read-only транзакции. Не обходить проверку прямым `psql` без явной команды пользователя.
+- Не выполнять миграцию SQLite-to-PostgreSQL для диагностики: она замещает данные целевой БД.
+- CLI сам ищет `production.env`, затем `.env`, если `DB_DSN` не задан в процессе. Для другого файла передай `-env-file <path>`; не передавай DSN в аргументах командной строки.
+
 ## ⚙️ Key Commands
 - **Run local app:** `go run cmd/gateway/main.go`
 - **Run all unit tests:** `go test ./...`
 - **Lint/Format:** `go fmt ./...`
 - **Build SPA:** `npm --prefix web ci; npm --prefix web run build`
 - **Build binary:** `go build -o build/gateway.exe cmd/gateway/main.go`
+- **PostgreSQL debug:** `go run ./cmd/postgres-debug -query "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"`
 - **Deploy to prod:** `git push prod main`
