@@ -179,6 +179,21 @@ func (kp *KeyPool) GetBestKeyExcluding(exclude map[string]bool) (*KeyState, erro
 	}
 }
 
+// ReserveKeyByHash atomically reserves the affinity key. It never substitutes
+// another account, which is required for provider-native conversations/assets.
+func (kp *KeyPool) ReserveKeyByHash(hash string) (*KeyState, error) {
+	kp.mu.RLock()
+	key := kp.keysMap[hash]
+	kp.mu.RUnlock()
+	if key == nil {
+		return nil, fmt.Errorf("affinity key is unavailable")
+	}
+	if !key.TryReserve(time.Now()) {
+		return nil, fmt.Errorf("affinity key is unavailable")
+	}
+	return key, nil
+}
+
 // keyBalance returns the last known account credit balance. Unknown balances
 // sort after known depleted balances while preserving normal usage rotation.
 func keyBalance(k *KeyState) int64 {

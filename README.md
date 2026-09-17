@@ -45,6 +45,11 @@ AIHUBMIX_LISTEN_ADDR=:8081
 RANKING_REFRESH=1h
 KEY_CHECK_TTL=1h
 KEY_CHECK_INTERVAL=1m
+ONE_MIN_AI_LISTEN_ADDR=:8083
+ONE_MIN_AI_ASSET_MAX_BYTES=20971520
+ONE_MIN_AI_CONVERSATION_TTL=24h
+ONE_MIN_AI_CLEANUP_INTERVAL=15m
+ONE_MIN_AI_CLEANUP_BATCH=100
 ```
 
 ### MySQL 8
@@ -146,6 +151,21 @@ go run cmd/gateway/main.go \
 ```
 
 ## Подключение клиентов
+
+### 1min.AI Unified Chat
+
+- Base URL: `http://localhost:8083/v1`; ключ: `GATEWAY_TOKEN`.
+- Поддерживаются text, streaming, image data URLs и document data URLs (`pdf`, `doc`, `docx`, `txt`, `json`, `csv`, `xml`). Вложения доступны только в последнем `user` сообщении.
+- Внешние HTTP(S) URL, audio, video, tools/function calling/MCP, reasoning и structured output не поддерживаются и возвращают `400`.
+- Provider options: top-level `oneMinAI`: `brandVoiceId`, `webSearch` (`enabled`, `numOfSite`, `maxWord`), `memory`, `conversationId`. Top-level `metadata` передаётся upstream после проверки размера и типа.
+- `POST /v1/conversations` создаёт native conversation. Ответ содержит одноразовый `owner_secret`; для продолжения передавайте его только в заголовке `X-1min-Conversation-Secret`. Conversation привязан к исходному key и имеет абсолютный TTL `ONE_MIN_AI_CONVERSATION_TTL`; недоступность affinity key возвращает `409`, без fallback на другой key.
+- Размер декодированного файла ограничен `ONE_MIN_AI_ASSET_MAX_BYTES` и не может превышать 50 MiB. Бинарные данные, data URLs и asset locations не сохраняются в БД и не логируются.
+
+Пример изображения:
+
+```json
+{"model":"model-id","messages":[{"role":"user","content":[{"type":"text","text":"Describe this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]}]}
+```
 
 OpenRouter:
 

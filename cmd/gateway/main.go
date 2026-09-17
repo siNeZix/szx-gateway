@@ -119,6 +119,7 @@ func main() {
 	// "использовано за сегодня не сбросилось после UTC+0" — без этого сброс
 	// происходит только лениво, при первом запросе через ключ.
 	dailyResetCtx, dailyResetCancel := context.WithCancel(context.Background())
+	oneMinCleanupCtx, oneMinCleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
@@ -143,6 +144,22 @@ func main() {
 		}
 	}()
 	log.Println("Daily usage reset worker started (1m interval).")
+	go func() {
+		ticker := time.NewTicker(cfg.OneMinAICleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-oneMinCleanupCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := dbStore.CleanupExpiredOneMinAI(time.Now().UTC(), cfg.OneMinAICleanupBatch); err != nil {
+					log.Printf("1min.AI cleanup failed: %v", err)
+				} else if n > 0 {
+					log.Printf("1min.AI cleanup removed %d expired conversations", n)
+				}
+			}
+		}
+	}()
 
 	openRouterProxy := proxy.NewProxyHandler(cfg, dbStore, openRouterPool, rankingMgr, proxyPool)
 	aihubmixProxy := proxy.NewAihubmixHandler(cfg, dbStore, aihubmixPool, rankingMgr, proxyPool)
@@ -227,6 +244,7 @@ func main() {
 
 	log.Println("Shutting down gracefully...")
 	dailyResetCancel()
+	oneMinCleanupCancel()
 	modelChecker.Stop()
 	keyChecker.Stop()
 	aihubmixChecker.Stop()

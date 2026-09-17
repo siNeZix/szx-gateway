@@ -532,6 +532,10 @@ func (s *Store) migrate() error {
 			error TEXT NOT NULL DEFAULT ''
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_model_check_results_lookup ON model_check_results(provider, model, timestamp);`,
+		`CREATE TABLE IF NOT EXISTS oneminai_conversations (id TEXT PRIMARY KEY, owner_hash TEXT NOT NULL, key_hash TEXT NOT NULL, upstream_id TEXT NOT NULL, model TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, expires_at DATETIME NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_oneminai_conversations_expiry ON oneminai_conversations(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS oneminai_assets (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, owner_hash TEXT NOT NULL, key_hash TEXT NOT NULL, upstream_id TEXT NOT NULL, kind TEXT NOT NULL, content_type TEXT NOT NULL, filename TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at DATETIME NOT NULL, expires_at DATETIME NOT NULL, UNIQUE(conversation_id, owner_hash, key_hash, sha256));`,
+		`CREATE INDEX IF NOT EXISTS idx_oneminai_assets_expiry ON oneminai_assets(expires_at);`,
 	}
 
 	for _, q := range queries {

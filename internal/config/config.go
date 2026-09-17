@@ -8,30 +8,34 @@ import (
 )
 
 type Config struct {
-	GatewayToken         string
-	DBDriver             string
-	DBDSN                string
-	DbPath               string
-	DBMaxOpenConns       int
-	DBMaxIdleConns       int
-	ListenAddr           string
-	AIHubMixListenAddr   string
-	GoogleListenAddr     string
-	OneMinAIListenAddr   string
-	RankingRefresh       time.Duration
-	KeyCheckTTL          time.Duration
-	KeyCheckRate         int
-	KeyCheckRateInterval time.Duration
-	KeyCheckConcurrency  int
-	MaxKeyRetries        int
-	WebUsername          string
-	WebPassword          string
-	FirewallEnabled      bool
-	FirewallBlock        bool
-	FirewallRedact       bool
-	LogDir               string
-	LogMaxSizeMB         int
-	LogMaxBackups        int
+	GatewayToken            string
+	DBDriver                string
+	DBDSN                   string
+	DbPath                  string
+	DBMaxOpenConns          int
+	DBMaxIdleConns          int
+	ListenAddr              string
+	AIHubMixListenAddr      string
+	GoogleListenAddr        string
+	OneMinAIListenAddr      string
+	RankingRefresh          time.Duration
+	KeyCheckTTL             time.Duration
+	KeyCheckRate            int
+	KeyCheckRateInterval    time.Duration
+	KeyCheckConcurrency     int
+	MaxKeyRetries           int
+	WebUsername             string
+	WebPassword             string
+	FirewallEnabled         bool
+	FirewallBlock           bool
+	FirewallRedact          bool
+	LogDir                  string
+	LogMaxSizeMB            int
+	LogMaxBackups           int
+	OneMinAIAssetMaxBytes   int64
+	OneMinAIConversationTTL time.Duration
+	OneMinAICleanupInterval time.Duration
+	OneMinAICleanupBatch    int
 }
 
 func Load() *Config {
@@ -66,6 +70,10 @@ func Load() *Config {
 	flag.StringVar(&cfg.LogDir, "log-dir", getEnv("LOG_DIR", "./logs"), "Directory for application logs")
 	flag.IntVar(&cfg.LogMaxSizeMB, "log-max-size-mb", getEnvInt("LOG_MAX_SIZE_MB", 100), "Maximum size of one log file in MiB")
 	flag.IntVar(&cfg.LogMaxBackups, "log-max-backups", getEnvInt("LOG_MAX_BACKUPS", 10), "Number of rotated log files to retain")
+	flag.Int64Var(&cfg.OneMinAIAssetMaxBytes, "1minai-asset-max-bytes", getEnvInt64("ONE_MIN_AI_ASSET_MAX_BYTES", 20*1024*1024), "Maximum decoded 1min.AI asset size")
+	conversationTTL := flag.String("1minai-conversation-ttl", getEnv("ONE_MIN_AI_CONVERSATION_TTL", "24h"), "Absolute 1min.AI conversation TTL")
+	cleanupInterval := flag.String("1minai-cleanup-interval", getEnv("ONE_MIN_AI_CLEANUP_INTERVAL", "15m"), "1min.AI expired record cleanup interval")
+	flag.IntVar(&cfg.OneMinAICleanupBatch, "1minai-cleanup-batch", getEnvInt("ONE_MIN_AI_CLEANUP_BATCH", 100), "1min.AI cleanup batch size")
 
 	flag.Parse()
 
@@ -83,6 +91,20 @@ func Load() *Config {
 	cfg.KeyCheckRateInterval, err = time.ParseDuration(*keyCheckRateIntStr)
 	if err != nil {
 		cfg.KeyCheckRateInterval = time.Minute
+	}
+	cfg.OneMinAIConversationTTL, err = time.ParseDuration(*conversationTTL)
+	if err != nil || cfg.OneMinAIConversationTTL <= 0 {
+		cfg.OneMinAIConversationTTL = 24 * time.Hour
+	}
+	cfg.OneMinAICleanupInterval, err = time.ParseDuration(*cleanupInterval)
+	if err != nil || cfg.OneMinAICleanupInterval <= 0 {
+		cfg.OneMinAICleanupInterval = 15 * time.Minute
+	}
+	if cfg.OneMinAIAssetMaxBytes <= 0 || cfg.OneMinAIAssetMaxBytes > 50*1024*1024 {
+		cfg.OneMinAIAssetMaxBytes = 50 * 1024 * 1024
+	}
+	if cfg.OneMinAICleanupBatch <= 0 {
+		cfg.OneMinAICleanupBatch = 100
 	}
 
 	return cfg
@@ -105,6 +127,16 @@ func getEnvBool(key string, fallback bool) bool {
 func getEnvInt(key string, fallback int) int {
 	if val, ok := os.LookupEnv(key); ok {
 		var parsed int
+		if _, err := fmt.Sscanf(val, "%d", &parsed); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if val, ok := os.LookupEnv(key); ok {
+		var parsed int64
 		if _, err := fmt.Sscanf(val, "%d", &parsed); err == nil {
 			return parsed
 		}

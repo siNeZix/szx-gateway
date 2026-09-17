@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -25,5 +28,153 @@ func TestClassifyOneMinAIError(t *testing.T) {
 				t.Fatalf("classifyOneMinAIError(%d) = %v, want %v", tt.status, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestOneMinPrompt(t *testing.T) {
+	tests := []struct {
+		name    string
+		request oneMinOpenAIRequest
+		want    string
+		wantErr string
+	}{
+		{
+			name: "preserves string history",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{
+				{Role: "system", Content: "Be concise."},
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi"},
+			}},
+			want: "SYSTEM: Be concise.\n\nUSER: Hello\n\nASSISTANT: Hi",
+		},
+		{
+			name: "accepts ordered text parts",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "Review:\n```go\n"},
+				map[string]any{"type": "text", "text": "fmt.Println(1)\n```"},
+			}}}},
+			want: "USER: Review:\n```go\nfmt.Println(1)\n```",
+		},
+		{
+			name: "rejects image without dropping text",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": "Describe this"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/a.png"}},
+			}}}},
+			wantErr: `messages[0].content[1]: unsupported content type "image_url"`,
+		},
+		{
+			name:    "rejects nil content",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: nil}}},
+			wantErr: "messages[0].content: only text string or text content parts",
+		},
+		{
+			name: "rejects malformed text part",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: []any{
+				map[string]any{"type": "text", "text": 1},
+			}}}},
+			wantErr: "messages[0].content[0]: text must be a string",
+		},
+		{
+			name:    "rejects unsupported role",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "tool", Content: "result"}}},
+			wantErr: `messages[0]: unsupported role "tool"`,
+		},
+		{
+			name: "rejects assistant tool call",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{
+				Role: "assistant", Content: nil, ToolCalls: json.RawMessage(`[{"id":"call_1"}]`),
+			}}},
+			wantErr: "messages[0]: tool calls and tool results are not supported",
+		},
+		{
+			name:    "rejects request tool definitions",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: "Hi"}}, Tools: json.RawMessage(`[{"type":"function"}]`)},
+			wantErr: "tool calls are not supported",
+		},
+		{
+			name:    "allows explicit no tools",
+			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: "Hi"}}, Tools: json.RawMessage(`[]`), ToolChoice: json.RawMessage(`"none"`), ParallelToolCalls: json.RawMessage(`false`)},
+			want:    "USER: Hi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := oneMinPrompt(tt.request)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("oneMinPrompt() error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("oneMinPrompt() unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("oneMinPrompt() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOneMinTextContentRejectsArbitraryJSON(t *testing.T) {
+	values := []any{nil, true, float64(1), map[string]any{}, []any{nil}, []any{map[string]any{"type": 1, "text": "x"}}}
+	for _, value := range values {
+		if _, err := oneMinTextContent(value, 0); err == nil {
+			t.Errorf("oneMinTextContent(%#v) succeeded", value)
+		}
+	}
+}
+
+func TestWriteOneMinStreamChunk(t *testing.T) {
+	res := httptest.NewRecorder()
+	writeOneMinStreamChunk(res, res, "model", map[string]any{"role": "assistant"}, nil)
+	finish := "stop"
+	writeOneMinStreamChunk(res, res, "model", map[string]any{}, &finish)
+	body := res.Body.String()
+	if !strings.Contains(body, `"role":"assistant"`) || !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Fatalf("unexpected chunks: %s", body)
+	}
+}
+
+func TestNormalizeOneMinRequestAttachmentsAndOptions(t *testing.T) {
+	memory := true
+	_ = memory
+	in := oneMinOpenAIRequest{Messages: []oneMinAIMessage{
+		{Role: "system", Content: "Be concise."},
+		{Role: "user", Content: []any{
+			map[string]any{"type": "text", "text": "Read "},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,eA=="}},
+			map[string]any{"type": "text", "text": " and file"},
+			map[string]any{"type": "file", "file": map[string]any{"filename": "a.pdf", "file_data": "data:application/pdf;base64,eA=="}},
+		}},
+	}, OneMinAI: json.RawMessage(`{"brandVoiceId":"voice","memory":true,"webSearch":{"enabled":true,"numOfSite":3,"maxWord":1000}}`), Metadata: json.RawMessage(`{"requestSource":"test"}`)}
+	out, err := normalizeOneMinRequest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Prompt != "SYSTEM: Be concise.\n\nUSER: Read  and file" || len(out.Images) != 1 || len(out.Files) != 1 || out.Memory == nil || !*out.Memory || out.WebSearch["numOfSite"] != 3 {
+		t.Fatalf("unexpected normalized request: %#v", out)
+	}
+}
+
+func TestNormalizeOneMinRequestRejectsHistoricalAttachment(t *testing.T) {
+	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{Messages: []oneMinAIMessage{
+		{Role: "user", Content: []any{map[string]any{"type": "text", "text": "old"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,eA=="}}}},
+		{Role: "user", Content: "new"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "only in the last user") {
+		t.Fatalf("expected historical attachment error, got %v", err)
+	}
+}
+
+func TestOneMinDataURL(t *testing.T) {
+	mime, payload, err := oneMinDataURL("data:application/pdf;base64,aGVsbG8=", 10)
+	if err != nil || mime != "application/pdf" || string(payload) != "hello" || oneMinAssetSHA256(payload) == "" {
+		t.Fatalf("unexpected data URL result %q %q %v", mime, payload, err)
+	}
+	if _, _, err := oneMinDataURL("https://example.test/file.pdf", 10); err == nil {
+		t.Fatal("external URL accepted")
 	}
 }
