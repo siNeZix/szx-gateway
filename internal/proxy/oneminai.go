@@ -528,7 +528,7 @@ func parseOneMinToolCalls(value json.RawMessage, tools []oneMinToolDefinition) (
 func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string) string {
 	definitions := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		definitions = append(definitions, fmt.Sprintf(`{"name":%q,"description":%q,"parameters":%s}`, tool.Function.Name, tool.Function.Description, tool.Function.Parameters))
+		definitions = append(definitions, fmt.Sprintf(`{"name":%q,"parameters":%s}`, tool.Function.Name, oneMinCompactToolSchema(tool.Function.Parameters)))
 	}
 	sort.Strings(definitions)
 	instruction := "Choose whether to call a tool or answer directly."
@@ -542,7 +542,29 @@ func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string) 
 			instruction = "Call only the required tool " + strings.TrimPrefix(toolChoice, "function ") + "."
 		}
 	}
-	return "SYSTEM: You may request client-side tools. Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Use only these tools: [" + strings.Join(definitions, ",") + "]"
+	return "SYSTEM: Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Tools: [" + strings.Join(definitions, ",") + "]"
+}
+
+func oneMinCompactToolSchema(raw json.RawMessage) string {
+	var schema struct {
+		Type       string `json:"type"`
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if json.Unmarshal(raw, &schema) != nil {
+		return `{}`
+	}
+	properties := make(map[string]string, len(schema.Properties))
+	for name, property := range schema.Properties {
+		properties[name] = property.Type
+	}
+	compact, err := json.Marshal(map[string]any{"type": schema.Type, "properties": properties, "required": schema.Required})
+	if err != nil {
+		return `{}`
+	}
+	return string(compact)
 }
 
 func hasJSONValue(value json.RawMessage) bool {

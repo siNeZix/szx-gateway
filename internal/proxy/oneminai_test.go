@@ -291,3 +291,17 @@ func TestOneMinEmulatedStream(t *testing.T) {
 		t.Fatalf("unexpected stream: %s", body)
 	}
 }
+
+func TestOneMinEmulatedToolsPromptCompactsOpenCodeSchema(t *testing.T) {
+	tools := []oneMinToolDefinition{{Type: "function"}}
+	tools[0].Function.Name = "bash"
+	tools[0].Function.Description = strings.Repeat("system instructions ", 1000)
+	tools[0].Function.Parameters = json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"command":{"type":"string","description":"command"},"timeout":{"type":"integer","minimum":1}},"required":["command"]}`)
+	prompt := oneMinEmulatedToolsPrompt(tools, "auto")
+	if len(prompt) > 512 || strings.Contains(prompt, "system instructions") || strings.Contains(prompt, "$schema") || strings.Contains(prompt, "description") {
+		t.Fatalf("unsafe tool prompt: %s", prompt)
+	}
+	if !strings.Contains(prompt, `"command":"string"`) || !strings.Contains(prompt, `"timeout":"integer"`) {
+		t.Fatalf("tool parameters missing: %s", prompt)
+	}
+}
