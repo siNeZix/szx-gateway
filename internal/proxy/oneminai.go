@@ -151,6 +151,7 @@ type oneMinNormalizedRequest struct {
 	EmulatedTools  bool
 	Tools          []oneMinToolDefinition
 	ToolChoice     string
+	HasToolResult  bool
 	Metadata       map[string]any
 }
 
@@ -285,7 +286,7 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 		if in.Stream && !normalized.EmulatedTools {
 			h.stream(w, resp, key, in.Model, start)
 		} else {
-			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools, in.Stream)
+			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools, normalized.ToolChoice, normalized.HasToolResult, in.Stream)
 		}
 		if conversation.ID != "" {
 			_ = h.store.TouchOneMinAIConversation(conversation.ID, time.Now().UTC())
@@ -334,7 +335,7 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 	toolCallIDs := map[string]bool{}
 	for i, message := range in.Messages {
 		if out.EmulatedTools {
-			if err := appendOneMinEmulatedToolMessage(&parts, message, i, out.Tools, toolCallIDs); err != nil {
+			if err := appendOneMinEmulatedToolMessage(&parts, message, i, out.Tools, toolCallIDs, &out.HasToolResult); err != nil {
 				return out, err
 			}
 			if hasToolCalls(message.ToolCalls) || message.ToolCallID != "" {
@@ -365,7 +366,8 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 		parts = append(parts, strings.ToUpper(message.Role)+": "+text)
 	}
 	if out.EmulatedTools {
-		parts = append([]string{oneMinEmulatedToolsPrompt(out.Tools, out.ToolChoice)}, parts...)
+		// Keep the protocol after untrusted conversation history so it remains the last instruction.
+		parts = append(parts, oneMinEmulatedToolsPrompt(out.Tools, out.ToolChoice, out.HasToolResult))
 	}
 	out.Prompt = strings.Join(parts, "\n\n")
 	return out, nil
@@ -457,7 +459,7 @@ func oneMinToolName(name string) bool {
 	return true
 }
 
-func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, index int, tools []oneMinToolDefinition, toolCallIDs map[string]bool) error {
+func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, index int, tools []oneMinToolDefinition, toolCallIDs map[string]bool, hasToolResult *bool) error {
 	if hasJSONValue(message.FunctionCall) || hasJSONValue(message.Reasoning) || hasJSONValue(message.Refusal) {
 		return fmt.Errorf("messages[%d]: legacy function calls, reasoning and refusal are not supported", index)
 	}
@@ -490,6 +492,7 @@ func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, i
 			return err
 		}
 		*parts = append(*parts, "TOOL RESULT "+message.ToolCallID+": "+text)
+		*hasToolResult = true
 		return nil
 	}
 	return nil
@@ -525,13 +528,16 @@ func parseOneMinToolCalls(value json.RawMessage, tools []oneMinToolDefinition) (
 	return calls, nil
 }
 
-func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string) string {
+func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string, hasToolResult bool) string {
 	definitions := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		definitions = append(definitions, fmt.Sprintf(`{"name":%q,"parameters":%s}`, tool.Function.Name, oneMinCompactToolSchema(tool.Function.Parameters)))
 	}
 	sort.Strings(definitions)
-	instruction := "Choose whether to call a tool or answer directly."
+	instruction := "Call at least one tool before answering."
+	if hasToolResult {
+		instruction = "Answer the user using provided tool results, or call another tool if needed."
+	}
 	switch toolChoice {
 	case "none":
 		instruction = "Do not call tools; answer directly."
@@ -542,7 +548,7 @@ func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string) 
 			instruction = "Call only the required tool " + strings.TrimPrefix(toolChoice, "function ") + "."
 		}
 	}
-	return "SYSTEM: Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Tools: [" + strings.Join(definitions, ",") + "]"
+	return "SYSTEM: Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Never claim workspace, file, command, network, or other external facts without first calling an appropriate tool. Tools: [" + strings.Join(definitions, ",") + "]"
 }
 
 func oneMinCompactToolSchema(raw json.RawMessage) string {
@@ -653,7 +659,7 @@ func oneMinMessageContent(content any, messageIndex int, allowAttachments bool) 
 	}
 }
 
-func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition, stream bool) {
+func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition, toolChoice string, hasToolResult, stream bool) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -703,6 +709,11 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 		} else if finalContent, ok := oneMinEmulatedContent(content); ok {
 			message["content"] = finalContent
 		}
+		if oneMinToolCallRequired(toolChoice, hasToolResult) && finishReason != "tool_calls" {
+			h.log(key, model, http.StatusBadGateway, "1min.AI did not return required tool calls", start, stream)
+			writeOpenAIError(w, http.StatusBadGateway, "1min.AI did not return required tool calls", "tool_choice", "upstream_error")
+			return
+		}
 	}
 	if stream {
 		h.emulatedStream(w, model, message, finishReason)
@@ -713,6 +724,13 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 	h.log(key, model, http.StatusOK, "", start, false)
+}
+
+func oneMinToolCallRequired(toolChoice string, hasToolResult bool) bool {
+	if toolChoice == "none" {
+		return false
+	}
+	return toolChoice == "required" || strings.HasPrefix(toolChoice, "function ") || !hasToolResult
 }
 
 func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, model string, message map[string]any, finishReason string) {

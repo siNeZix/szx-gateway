@@ -297,11 +297,40 @@ func TestOneMinEmulatedToolsPromptCompactsOpenCodeSchema(t *testing.T) {
 	tools[0].Function.Name = "bash"
 	tools[0].Function.Description = strings.Repeat("system instructions ", 1000)
 	tools[0].Function.Parameters = json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"command":{"type":"string","description":"command"},"timeout":{"type":"integer","minimum":1}},"required":["command"]}`)
-	prompt := oneMinEmulatedToolsPrompt(tools, "auto")
+	prompt := oneMinEmulatedToolsPrompt(tools, "auto", false)
 	if len(prompt) > 512 || strings.Contains(prompt, "system instructions") || strings.Contains(prompt, "$schema") || strings.Contains(prompt, "description") {
 		t.Fatalf("unsafe tool prompt: %s", prompt)
 	}
 	if !strings.Contains(prompt, `"command":"string"`) || !strings.Contains(prompt, `"timeout":"integer"`) {
 		t.Fatalf("tool parameters missing: %s", prompt)
+	}
+}
+
+func TestNormalizeOneMinRequestPlacesToolProtocolLast(t *testing.T) {
+	out, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{{Role: "user", Content: "Review source code without tools."}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"glob","parameters":{}}}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.Prompt, oneMinEmulatedToolsPrompt(out.Tools, out.ToolChoice, out.HasToolResult)) {
+		t.Fatalf("tool protocol is not last: %s", out.Prompt)
+	}
+}
+
+func TestOneMinToolCallRequired(t *testing.T) {
+	for _, choice := range []string{"required", "function glob"} {
+		if !oneMinToolCallRequired(choice, false) {
+			t.Fatalf("tool choice %q must require a call", choice)
+		}
+	}
+	if !oneMinToolCallRequired("auto", false) {
+		t.Fatal("initial auto tool request must require a call")
+	}
+	for _, choice := range []string{"", "auto", "none"} {
+		if oneMinToolCallRequired(choice, true) {
+			t.Fatalf("tool choice %q must allow final content after tool results", choice)
+		}
 	}
 }
