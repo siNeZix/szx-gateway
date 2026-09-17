@@ -233,7 +233,7 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		target := oneMinAITarget
-		if in.Stream {
+		if in.Stream && !normalized.EmulatedTools {
 			target += "?isStreaming=true"
 		}
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(payload))

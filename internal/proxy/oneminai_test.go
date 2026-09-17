@@ -270,3 +270,24 @@ func TestOneMinEmulatedContent(t *testing.T) {
 		t.Fatalf("unexpected content %q, ok=%v", content, ok)
 	}
 }
+
+func TestOneMinEmulatedStream(t *testing.T) {
+	res := httptest.NewRecorder()
+	h := &OneMinAIHandler{}
+	h.emulatedStream(res, "model", map[string]any{
+		"role":    "assistant",
+		"content": nil,
+		"tool_calls": []map[string]any{{
+			"id":   "call_1min_1",
+			"type": "function",
+			"function": map[string]string{
+				"name":      "glob",
+				"arguments": `{"pattern":"**/*"}`,
+			},
+		}},
+	}, "tool_calls")
+	body := res.Body.String()
+	if !strings.Contains(body, `"tool_calls"`) || !strings.Contains(body, `"finish_reason":"tool_calls"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("unexpected stream: %s", body)
+	}
+}
