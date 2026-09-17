@@ -66,6 +66,10 @@ func parseOneMinOptions(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) er
 				return fmt.Errorf("oneMinAI.history: invalid object")
 			}
 			out.MixedHistory = v.IsMixed
+		case "emulatedTools":
+			if err := json.Unmarshal(value, &out.EmulatedTools); err != nil {
+				return fmt.Errorf("oneMinAI.emulatedTools: must be a boolean")
+			}
 		default:
 			return fmt.Errorf("oneMinAI.%s: unsupported provider option", name)
 		}

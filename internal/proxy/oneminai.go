@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,6 +115,21 @@ type oneMinAIMessage struct {
 	Refusal      json.RawMessage `json:"refusal"`
 }
 
+type oneMinToolDefinition struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
+}
+
+type oneMinEmulatedToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
 type oneMinAssetInput struct {
 	DataURL  string
 	Filename string
@@ -131,6 +147,9 @@ type oneMinNormalizedRequest struct {
 	Memory         *bool
 	ConversationID string
 	MixedHistory   bool
+	EmulatedTools  bool
+	Tools          []oneMinToolDefinition
+	ToolChoice     string
 	Metadata       map[string]any
 }
 
@@ -148,6 +167,10 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.ranking.IsOneMinAIModel(in.Model) {
 		writeProxyError(w, http.StatusBadRequest, fmt.Sprintf("Model %s is not supported by 1min.AI", in.Model))
+		return
+	}
+	if in.Stream && hasOneMinEmulatedTools(in.OneMinAI) {
+		writeOpenAIError(w, http.StatusBadRequest, "streaming is not supported with oneMinAI.emulatedTools", "stream", "unsupported_content_type")
 		return
 	}
 	normalized, err := normalizeOneMinRequest(in)
@@ -169,6 +192,10 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	if conversation.ID != "" && conversation.Model != in.Model && !normalized.MixedHistory {
 		writeOpenAIError(w, http.StatusBadRequest, "conversation model differs; set oneMinAI.history.isMixed=true to allow it", "model", "invalid_request_error")
+		return
+	}
+	if normalized.EmulatedTools && conversation.ID != "" {
+		writeOpenAIError(w, http.StatusBadRequest, "oneMinAI.conversationId is not supported with oneMinAI.emulatedTools", "oneMinAI.conversationId", "invalid_request_error")
 		return
 	}
 	var finalErr error
@@ -261,7 +288,7 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 		if in.Stream {
 			h.stream(w, resp, key, in.Model, start)
 		} else {
-			h.normal(w, resp, key, in.Model, start)
+			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools)
 		}
 		if conversation.ID != "" {
 			_ = h.store.TouchOneMinAIConversation(conversation.ID, time.Now().UTC())
@@ -289,19 +316,30 @@ func oneMinPrompt(in oneMinOpenAIRequest) (string, error) {
 
 func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, error) {
 	var out oneMinNormalizedRequest
-	if hasToolDefinitions(in.Tools) || hasToolChoice(in.ToolChoice) || hasParallelToolCalls(in.ParallelToolCalls) {
+	if err := parseOneMinOptions(in, &out); err != nil {
+		return out, err
+	}
+	if out.EmulatedTools {
+		if err := parseOneMinTools(in, &out); err != nil {
+			return out, err
+		}
+	} else if hasToolDefinitions(in.Tools) || hasToolChoice(in.ToolChoice) || hasParallelToolCalls(in.ParallelToolCalls) {
 		return out, fmt.Errorf("tools: tool calls are not supported by the 1min.AI OpenAI adapter")
 	}
 	if hasJSONValue(in.ResponseFormat) || hasJSONValue(in.ReasoningEffort) || hasJSONValue(in.Audio) || hasJSONValue(in.Modalities) {
 		return out, fmt.Errorf("request: structured output, reasoning and audio/video are not supported by the 1min.AI OpenAI adapter")
 	}
-	if err := parseOneMinOptions(in, &out); err != nil {
-		return out, err
-	}
-
 	parts := make([]string, 0, len(in.Messages))
+	toolCallIDs := map[string]bool{}
 	for i, message := range in.Messages {
-		if hasToolCalls(message.ToolCalls) || hasJSONValue(message.FunctionCall) || message.ToolCallID != "" || hasJSONValue(message.Reasoning) || hasJSONValue(message.Refusal) {
+		if out.EmulatedTools {
+			if err := appendOneMinEmulatedToolMessage(&parts, message, i, out.Tools, toolCallIDs); err != nil {
+				return out, err
+			}
+			if hasToolCalls(message.ToolCalls) || message.ToolCallID != "" {
+				continue
+			}
+		} else if hasToolCalls(message.ToolCalls) || hasJSONValue(message.FunctionCall) || message.ToolCallID != "" || hasJSONValue(message.Reasoning) || hasJSONValue(message.Refusal) {
 			return out, fmt.Errorf("messages[%d]: tool calls and tool results are not supported by the 1min.AI OpenAI adapter", i)
 		}
 		switch message.Role {
@@ -325,8 +363,181 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 		out.Images, out.Files = images, files
 		parts = append(parts, strings.ToUpper(message.Role)+": "+text)
 	}
+	if out.EmulatedTools {
+		parts = append([]string{oneMinEmulatedToolsPrompt(out.Tools, out.ToolChoice)}, parts...)
+	}
 	out.Prompt = strings.Join(parts, "\n\n")
 	return out, nil
+}
+
+func hasOneMinEmulatedTools(value json.RawMessage) bool {
+	var options struct {
+		EmulatedTools bool `json:"emulatedTools"`
+	}
+	return json.Unmarshal(value, &options) == nil && options.EmulatedTools
+}
+
+func parseOneMinTools(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) error {
+	if hasParallelToolCalls(in.ParallelToolCalls) {
+		return fmt.Errorf("parallel_tool_calls: is not supported with oneMinAI.emulatedTools")
+	}
+	if !hasToolDefinitions(in.Tools) {
+		if hasToolChoice(in.ToolChoice) {
+			return fmt.Errorf("tool_choice: requires at least one tool definition")
+		}
+		return nil
+	}
+	if err := parseOneMinToolChoice(in.ToolChoice, out); err != nil {
+		return err
+	}
+	if len(in.Tools) > 64*1024 {
+		return fmt.Errorf("tools: exceeds 65536 bytes")
+	}
+	if err := json.Unmarshal(in.Tools, &out.Tools); err != nil || len(out.Tools) == 0 || len(out.Tools) > 32 {
+		return fmt.Errorf("tools: must be an array of 1..32 function definitions")
+	}
+	names := make(map[string]bool, len(out.Tools))
+	for i, tool := range out.Tools {
+		if tool.Type != "function" || tool.Function.Name == "" || len(tool.Function.Name) > 64 || !oneMinToolName(tool.Function.Name) || len(tool.Function.Description) > 4096 || !json.Valid(tool.Function.Parameters) {
+			return fmt.Errorf("tools[%d]: must be a valid function definition", i)
+		}
+		var parameters map[string]any
+		if json.Unmarshal(tool.Function.Parameters, &parameters) != nil || parameters == nil {
+			return fmt.Errorf("tools[%d].function.parameters: must be a JSON object", i)
+		}
+		if names[tool.Function.Name] {
+			return fmt.Errorf("tools[%d].function.name: duplicate tool name %q", i, tool.Function.Name)
+		}
+		names[tool.Function.Name] = true
+	}
+	return nil
+}
+
+func parseOneMinToolChoice(value json.RawMessage, out *oneMinNormalizedRequest) error {
+	if !hasJSONValue(value) {
+		return nil
+	}
+	var choice string
+	if json.Unmarshal(value, &choice) == nil {
+		if choice == "auto" || choice == "none" || choice == "required" {
+			out.ToolChoice = choice
+			return nil
+		}
+		return fmt.Errorf("tool_choice: must be auto, none, required, or a function object")
+	}
+	var forced struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(value, &forced) != nil || forced.Type != "function" || forced.Function.Name == "" {
+		return fmt.Errorf("tool_choice: must be auto, none, required, or a function object")
+	}
+	for _, tool := range out.Tools {
+		if tool.Function.Name == forced.Function.Name {
+			out.ToolChoice = "function " + forced.Function.Name
+			return nil
+		}
+	}
+	return fmt.Errorf("tool_choice: refers to an undeclared tool")
+}
+
+func oneMinToolName(name string) bool {
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, index int, tools []oneMinToolDefinition, toolCallIDs map[string]bool) error {
+	if hasJSONValue(message.FunctionCall) || hasJSONValue(message.Reasoning) || hasJSONValue(message.Refusal) {
+		return fmt.Errorf("messages[%d]: legacy function calls, reasoning and refusal are not supported", index)
+	}
+	if hasToolCalls(message.ToolCalls) {
+		if message.Role != "assistant" {
+			return fmt.Errorf("messages[%d].tool_calls: only assistant messages may contain tool calls", index)
+		}
+		calls, err := parseOneMinToolCalls(message.ToolCalls, tools)
+		if err != nil {
+			return fmt.Errorf("messages[%d].tool_calls: %w", index, err)
+		}
+		for _, call := range calls {
+			if toolCallIDs[call.ID] {
+				return fmt.Errorf("messages[%d].tool_calls: duplicate tool call ID %q", index, call.ID)
+			}
+			toolCallIDs[call.ID] = true
+			*parts = append(*parts, "ASSISTANT TOOL CALL "+call.ID+" "+call.Name+": "+string(call.Arguments))
+		}
+		return nil
+	}
+	if message.ToolCallID != "" {
+		if message.Role != "tool" {
+			return fmt.Errorf("messages[%d].tool_call_id: only tool messages may provide tool_call_id", index)
+		}
+		if !toolCallIDs[message.ToolCallID] {
+			return fmt.Errorf("messages[%d].tool_call_id: does not match an earlier assistant tool call", index)
+		}
+		text, err := oneMinTextContent(message.Content, index)
+		if err != nil {
+			return err
+		}
+		*parts = append(*parts, "TOOL RESULT "+message.ToolCallID+": "+text)
+		return nil
+	}
+	return nil
+}
+
+func parseOneMinToolCalls(value json.RawMessage, tools []oneMinToolDefinition) ([]oneMinEmulatedToolCall, error) {
+	var raw []struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(value, &raw) != nil || len(raw) == 0 || len(raw) > 32 {
+		return nil, fmt.Errorf("must be an array of 1..32 OpenAI function calls")
+	}
+	allowed := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		allowed[tool.Function.Name] = true
+	}
+	calls := make([]oneMinEmulatedToolCall, 0, len(raw))
+	for i, call := range raw {
+		if call.ID == "" || len(call.ID) > 128 || call.Type != "function" || !allowed[call.Function.Name] || !json.Valid(call.Function.Arguments) {
+			return nil, fmt.Errorf("call %d is invalid or refers to an undeclared tool", i)
+		}
+		var arguments any
+		if json.Unmarshal(call.Function.Arguments, &arguments) != nil {
+			return nil, fmt.Errorf("call %d arguments are invalid JSON", i)
+		}
+		calls = append(calls, oneMinEmulatedToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
+	}
+	return calls, nil
+}
+
+func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string) string {
+	definitions := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		definitions = append(definitions, fmt.Sprintf(`{"name":%q,"description":%q,"parameters":%s}`, tool.Function.Name, tool.Function.Description, tool.Function.Parameters))
+	}
+	sort.Strings(definitions)
+	instruction := "Choose whether to call a tool or answer directly."
+	switch toolChoice {
+	case "none":
+		instruction = "Do not call tools; answer directly."
+	case "required":
+		instruction = "Call at least one tool before answering."
+	default:
+		if strings.HasPrefix(toolChoice, "function ") {
+			instruction = "Call only the required tool " + strings.TrimPrefix(toolChoice, "function ") + "."
+		}
+	}
+	return "SYSTEM: You may request client-side tools. Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Use only these tools: [" + strings.Join(definitions, ",") + "]"
 }
 
 func hasJSONValue(value json.RawMessage) bool {
@@ -415,7 +626,7 @@ func oneMinMessageContent(content any, messageIndex int, allowAttachments bool) 
 	}
 }
 
-func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time) {
+func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -456,10 +667,62 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	}
 	h.updateCredits(key, record.AIRecord.TeamUser.CreditLimit, record.AIRecord.TeamUser.UsedCredit)
 	content := strings.Join(record.AIRecord.Detail.Result, "\n")
-	out := map[string]any{"id": "chatcmpl-1minai", "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": content}, "finish_reason": "stop"}}}
+	message := map[string]any{"role": "assistant", "content": content}
+	finishReason := "stop"
+	if emulatedTools {
+		if calls, ok := oneMinEmulatedToolCalls(content, tools); ok {
+			message = map[string]any{"role": "assistant", "content": nil, "tool_calls": calls}
+			finishReason = "tool_calls"
+		} else if finalContent, ok := oneMinEmulatedContent(content); ok {
+			message["content"] = finalContent
+		}
+	}
+	out := map[string]any{"id": "chatcmpl-1minai", "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}}}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 	h.log(key, model, http.StatusOK, "", start, false)
+}
+
+func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition) ([]map[string]any, bool) {
+	var response struct {
+		ToolCalls []struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"tool_calls"`
+	}
+	if json.Unmarshal([]byte(content), &response) != nil || len(response.ToolCalls) == 0 || len(response.ToolCalls) > 32 {
+		return nil, false
+	}
+	allowed := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		allowed[tool.Function.Name] = true
+	}
+	calls := make([]map[string]any, 0, len(response.ToolCalls))
+	for i, call := range response.ToolCalls {
+		if !allowed[call.Name] || !json.Valid(call.Arguments) {
+			return nil, false
+		}
+		var arguments any
+		if json.Unmarshal(call.Arguments, &arguments) != nil {
+			return nil, false
+		}
+		encoded, err := json.Marshal(arguments)
+		if err != nil {
+			return nil, false
+		}
+		calls = append(calls, map[string]any{"id": fmt.Sprintf("call_1min_%d", i+1), "type": "function", "function": map[string]string{"name": call.Name, "arguments": string(encoded)}})
+	}
+	return calls, true
+}
+
+func oneMinEmulatedContent(content string) (string, bool) {
+	var response struct {
+		Content *string `json:"content"`
+	}
+	if json.Unmarshal([]byte(content), &response) != nil || response.Content == nil {
+		return "", false
+	}
+	return *response.Content, true
 }
 
 func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time) {

@@ -156,8 +156,9 @@ go run cmd/gateway/main.go \
 
 - Base URL: `http://localhost:8083/v1`; ключ: `GATEWAY_TOKEN`.
 - Поддерживаются text, streaming, image data URLs и document data URLs (`pdf`, `doc`, `docx`, `txt`, `json`, `csv`, `xml`). Вложения доступны только в последнем `user` сообщении.
-- Внешние HTTP(S) URL, audio, video, tools/function calling/MCP, reasoning и structured output не поддерживаются и возвращают `400`.
-- Provider options: top-level `oneMinAI`: `brandVoiceId`, `webSearch` (`enabled`, `numOfSite`, `maxWord`), `memory`, `conversationId`. Top-level `metadata` передаётся upstream после проверки размера и типа.
+- Внешние HTTP(S) URL, audio, video, MCP, reasoning и structured output не поддерживаются и возвращают `400`.
+- Tools/function calling доступны только через opt-in `oneMinAI.emulatedTools: true`: gateway просит 1min.AI вернуть строгий JSON, отдаёт OpenAI `tool_calls`, а клиент сам вызывает функцию и присылает `role: "tool"` в следующем запросе. Streaming и `conversationId` в этом режиме не поддерживаются. Это prompt-based compatibility mode, не native tool calling.
+- Provider options: top-level `oneMinAI`: `brandVoiceId`, `webSearch` (`enabled`, `numOfSite`, `maxWord`), `memory`, `conversationId`, `emulatedTools`. Top-level `metadata` передаётся upstream после проверки размера и типа.
 - `POST /v1/conversations` создаёт native conversation. Ответ содержит одноразовый `owner_secret`; для продолжения передавайте его только в заголовке `X-1min-Conversation-Secret`. Conversation привязан к исходному key и имеет абсолютный TTL `ONE_MIN_AI_CONVERSATION_TTL`; недоступность affinity key возвращает `409`, без fallback на другой key.
 - Размер декодированного файла ограничен `ONE_MIN_AI_ASSET_MAX_BYTES` и не может превышать 50 MiB. Бинарные данные, data URLs и asset locations не сохраняются в БД и не логируются.
 

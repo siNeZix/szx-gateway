@@ -178,3 +178,52 @@ func TestOneMinDataURL(t *testing.T) {
 		t.Fatal("external URL accepted")
 	}
 }
+
+func TestNormalizeOneMinRequestEmulatedTools(t *testing.T) {
+	in := oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{
+			{Role: "user", Content: "Weather?"},
+			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Moscow\"}"}}]`)},
+			{Role: "tool", ToolCallID: "call_1", Content: `{"temp":20}`},
+		},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"get_weather","description":"Gets weather","parameters":{"type":"object"}}}]`),
+		OneMinAI: json.RawMessage(`{"emulatedTools":true}`),
+	}
+	out, err := normalizeOneMinRequest(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.EmulatedTools || len(out.Tools) != 1 || !strings.Contains(out.Prompt, "ASSISTANT TOOL CALL call_1 get_weather") || !strings.Contains(out.Prompt, `TOOL RESULT call_1: {"temp":20}`) {
+		t.Fatalf("unexpected normalized request: %#v", out)
+	}
+}
+
+func TestNormalizeOneMinRequestRejectsUnknownToolResult(t *testing.T) {
+	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{{Role: "tool", ToolCallID: "call_missing", Content: "result"}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"lookup","parameters":{}}}]`),
+		OneMinAI: json.RawMessage(`{"emulatedTools":true}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match an earlier") {
+		t.Fatalf("expected unknown tool result error, got %v", err)
+	}
+}
+
+func TestOneMinEmulatedToolCalls(t *testing.T) {
+	tools := []oneMinToolDefinition{{Type: "function"}}
+	tools[0].Function.Name = "get_weather"
+	calls, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":{"city":"Moscow"}}]}`, tools)
+	if !ok || len(calls) != 1 || calls[0]["id"] != "call_1min_1" {
+		t.Fatalf("unexpected tool calls: %#v, ok=%v", calls, ok)
+	}
+	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"unknown","arguments":{}}]}`, tools); ok {
+		t.Fatal("undeclared tool accepted")
+	}
+}
+
+func TestOneMinEmulatedContent(t *testing.T) {
+	content, ok := oneMinEmulatedContent(`{"content":"Final answer"}`)
+	if !ok || content != "Final answer" {
+		t.Fatalf("unexpected content %q, ok=%v", content, ok)
+	}
+}
