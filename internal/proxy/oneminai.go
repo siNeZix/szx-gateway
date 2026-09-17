@@ -121,6 +121,7 @@ type oneMinToolDefinition struct {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Parameters  json.RawMessage `json:"parameters"`
+		InputSchema json.RawMessage `json:"input_schema"`
 	} `json:"function"`
 }
 
@@ -385,6 +386,14 @@ func parseOneMinTools(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) erro
 	}
 	names := make(map[string]bool, len(out.Tools))
 	for i, tool := range out.Tools {
+		if tool.Function.Parameters == nil && tool.Function.InputSchema != nil {
+			tool.Function.Parameters = tool.Function.InputSchema
+			out.Tools[i] = tool
+		}
+		if tool.Function.Parameters == nil {
+			tool.Function.Parameters = json.RawMessage(`{}`)
+			out.Tools[i] = tool
+		}
 		if tool.Type != "function" || tool.Function.Name == "" || len(tool.Function.Name) > 64 || !oneMinToolName(tool.Function.Name) || len(tool.Function.Description) > 4096 || !json.Valid(tool.Function.Parameters) {
 			return fmt.Errorf("tools[%d]: must be a valid function definition", i)
 		}

@@ -217,6 +217,19 @@ func TestNormalizeOneMinRequestEmulatesToolsAutomatically(t *testing.T) {
 	}
 }
 
+func TestNormalizeOneMinRequestAcceptsToolsWithoutParameters(t *testing.T) {
+	out, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{{Role: "user", Content: "Run status"}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"status"}},{"type":"function","function":{"name":"health","input_schema":{"type":"object"}}}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out.Tools[0].Function.Parameters) != `{}` || string(out.Tools[1].Function.Parameters) != `{"type":"object"}` {
+		t.Fatalf("unexpected normalized parameters: %#v", out.Tools)
+	}
+}
+
 func TestNormalizeOneMinRequestAllowsParallelToolCalls(t *testing.T) {
 	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
 		Messages:          []oneMinAIMessage{{Role: "user", Content: "Weather?"}},
