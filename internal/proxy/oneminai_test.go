@@ -85,12 +85,12 @@ func TestOneMinPrompt(t *testing.T) {
 			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{
 				Role: "assistant", Content: nil, ToolCalls: json.RawMessage(`[{"id":"call_1"}]`),
 			}}},
-			wantErr: "messages[0]: tool calls and tool results are not supported",
+			wantErr: "tools: definitions are required when continuing tool-call history",
 		},
 		{
 			name:    "rejects request tool definitions",
 			request: oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: "Hi"}}, Tools: json.RawMessage(`[{"type":"function"}]`)},
-			wantErr: "tool calls are not supported",
+			wantErr: "tools[0]: must be a valid function definition",
 		},
 		{
 			name:    "allows explicit no tools",
@@ -186,8 +186,7 @@ func TestNormalizeOneMinRequestEmulatedTools(t *testing.T) {
 			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Moscow\"}"}}]`)},
 			{Role: "tool", ToolCallID: "call_1", Content: `{"temp":20}`},
 		},
-		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"get_weather","description":"Gets weather","parameters":{"type":"object"}}}]`),
-		OneMinAI: json.RawMessage(`{"emulatedTools":true}`),
+		Tools: json.RawMessage(`[{"type":"function","function":{"name":"get_weather","description":"Gets weather","parameters":{"type":"object"}}}]`),
 	}
 	out, err := normalizeOneMinRequest(in)
 	if err != nil {
@@ -202,10 +201,30 @@ func TestNormalizeOneMinRequestRejectsUnknownToolResult(t *testing.T) {
 	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
 		Messages: []oneMinAIMessage{{Role: "tool", ToolCallID: "call_missing", Content: "result"}},
 		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"lookup","parameters":{}}}]`),
-		OneMinAI: json.RawMessage(`{"emulatedTools":true}`),
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match an earlier") {
 		t.Fatalf("expected unknown tool result error, got %v", err)
+	}
+}
+
+func TestNormalizeOneMinRequestEmulatesToolsAutomatically(t *testing.T) {
+	out, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{{Role: "user", Content: "Weather?"}},
+		Tools:    json.RawMessage(`[{"type":"function","function":{"name":"weather","parameters":{}}}]`),
+	})
+	if err != nil || !out.EmulatedTools {
+		t.Fatalf("emulated tools were not enabled: %#v, err=%v", out, err)
+	}
+}
+
+func TestNormalizeOneMinRequestAllowsParallelToolCalls(t *testing.T) {
+	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages:          []oneMinAIMessage{{Role: "user", Content: "Weather?"}},
+		Tools:             json.RawMessage(`[{"type":"function","function":{"name":"weather","parameters":{}}}]`),
+		ParallelToolCalls: json.RawMessage(`true`),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

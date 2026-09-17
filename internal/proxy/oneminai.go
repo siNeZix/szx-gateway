@@ -169,10 +169,6 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, http.StatusBadRequest, fmt.Sprintf("Model %s is not supported by 1min.AI", in.Model))
 		return
 	}
-	if in.Stream && hasOneMinEmulatedTools(in.OneMinAI) {
-		writeOpenAIError(w, http.StatusBadRequest, "streaming is not supported with oneMinAI.emulatedTools", "stream", "unsupported_content_type")
-		return
-	}
 	normalized, err := normalizeOneMinRequest(in)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error(), oneMinErrorParam(err), "unsupported_content_type")
@@ -285,10 +281,10 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		if in.Stream {
+		if in.Stream && !normalized.EmulatedTools {
 			h.stream(w, resp, key, in.Model, start)
 		} else {
-			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools)
+			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools, in.Stream)
 		}
 		if conversation.ID != "" {
 			_ = h.store.TouchOneMinAIConversation(conversation.ID, time.Now().UTC())
@@ -319,7 +315,11 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 	if err := parseOneMinOptions(in, &out); err != nil {
 		return out, err
 	}
+	out.EmulatedTools = hasToolDefinitions(in.Tools) || hasToolChoice(in.ToolChoice) || hasParallelToolCalls(in.ParallelToolCalls) || hasOneMinToolHistory(in.Messages)
 	if out.EmulatedTools {
+		if !hasToolDefinitions(in.Tools) {
+			return out, fmt.Errorf("tools: definitions are required when continuing tool-call history")
+		}
 		if err := parseOneMinTools(in, &out); err != nil {
 			return out, err
 		}
@@ -370,25 +370,12 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 	return out, nil
 }
 
-func hasOneMinEmulatedTools(value json.RawMessage) bool {
-	var options struct {
-		EmulatedTools bool `json:"emulatedTools"`
-	}
-	return json.Unmarshal(value, &options) == nil && options.EmulatedTools
-}
-
 func parseOneMinTools(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) error {
-	if hasParallelToolCalls(in.ParallelToolCalls) {
-		return fmt.Errorf("parallel_tool_calls: is not supported with oneMinAI.emulatedTools")
-	}
 	if !hasToolDefinitions(in.Tools) {
 		if hasToolChoice(in.ToolChoice) {
 			return fmt.Errorf("tool_choice: requires at least one tool definition")
 		}
 		return nil
-	}
-	if err := parseOneMinToolChoice(in.ToolChoice, out); err != nil {
-		return err
 	}
 	if len(in.Tools) > 64*1024 {
 		return fmt.Errorf("tools: exceeds 65536 bytes")
@@ -410,7 +397,16 @@ func parseOneMinTools(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) erro
 		}
 		names[tool.Function.Name] = true
 	}
-	return nil
+	return parseOneMinToolChoice(in.ToolChoice, out)
+}
+
+func hasOneMinToolHistory(messages []oneMinAIMessage) bool {
+	for _, message := range messages {
+		if hasToolCalls(message.ToolCalls) || message.ToolCallID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseOneMinToolChoice(value json.RawMessage, out *oneMinNormalizedRequest) error {
@@ -626,7 +622,7 @@ func oneMinMessageContent(content any, messageIndex int, allowAttachments bool) 
 	}
 }
 
-func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition) {
+func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition, stream bool) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -677,10 +673,37 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 			message["content"] = finalContent
 		}
 	}
+	if stream {
+		h.emulatedStream(w, model, message, finishReason)
+		h.log(key, model, http.StatusOK, "", start, true)
+		return
+	}
 	out := map[string]any{"id": "chatcmpl-1minai", "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}}}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 	h.log(key, model, http.StatusOK, "", start, false)
+}
+
+func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, model string, message map[string]any, finishReason string) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeProxyError(w, http.StatusInternalServerError, "Streaming not supported by gateway")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	writeOneMinStreamChunk(w, flusher, model, map[string]any{"role": "assistant"}, nil)
+	if calls, ok := message["tool_calls"].([]map[string]any); ok {
+		for index, call := range calls {
+			function := call["function"].(map[string]string)
+			writeOneMinStreamChunk(w, flusher, model, map[string]any{"tool_calls": []any{map[string]any{"index": index, "id": call["id"], "type": "function", "function": function}}}, nil)
+		}
+	} else if content, ok := message["content"].(string); ok && content != "" {
+		writeOneMinStreamChunk(w, flusher, model, map[string]any{"content": content}, nil)
+	}
+	writeOneMinStreamChunk(w, flusher, model, map[string]any{}, &finishReason)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition) ([]map[string]any, bool) {
