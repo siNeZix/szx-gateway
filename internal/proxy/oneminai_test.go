@@ -230,6 +230,17 @@ func TestNormalizeOneMinRequestAcceptsToolsWithoutParameters(t *testing.T) {
 	}
 }
 
+func TestNormalizeOneMinRequestAcceptsLongToolDescription(t *testing.T) {
+	description, err := json.Marshal(strings.Repeat("x", 5000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := json.RawMessage(`[{"type":"function","function":{"name":"long_description","description":` + string(description) + `,"parameters":{}}}]`)
+	if _, err := normalizeOneMinRequest(oneMinOpenAIRequest{Messages: []oneMinAIMessage{{Role: "user", Content: "Use tool"}}, Tools: tools}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNormalizeOneMinRequestAllowsParallelToolCalls(t *testing.T) {
 	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
 		Messages:          []oneMinAIMessage{{Role: "user", Content: "Weather?"}},

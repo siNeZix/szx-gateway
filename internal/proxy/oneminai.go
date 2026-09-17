@@ -394,7 +394,7 @@ func parseOneMinTools(in oneMinOpenAIRequest, out *oneMinNormalizedRequest) erro
 			tool.Function.Parameters = json.RawMessage(`{}`)
 			out.Tools[i] = tool
 		}
-		if tool.Type != "function" || tool.Function.Name == "" || len(tool.Function.Name) > 64 || !oneMinToolName(tool.Function.Name) || len(tool.Function.Description) > 4096 || !json.Valid(tool.Function.Parameters) {
+		if tool.Type != "function" || tool.Function.Name == "" || len(tool.Function.Name) > 64 || !oneMinToolName(tool.Function.Name) || !json.Valid(tool.Function.Parameters) {
 			return fmt.Errorf("tools[%d]: must be a valid function definition", i)
 		}
 		var parameters map[string]any
