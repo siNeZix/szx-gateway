@@ -590,8 +590,8 @@ func (ws *WebServer) apiKeysAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"added": added})
 }
 
-// POST /api/keys/bulk — enable/disable/delete набора ключей.
-// Тело: { "provider": "...", "hashes": ["...","..."], "action": "enable|disable|delete" }
+// POST /api/keys/bulk — enable/disable/delete/reset_cooldown набора ключей.
+// Тело: { "provider": "...", "hashes": ["...","..."], "action": "enable|disable|delete|reset_cooldown" }
 // Либо form-encoded (обратная совместимость).
 func (ws *WebServer) apiKeysBulk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -659,6 +659,9 @@ func (ws *WebServer) apiKeysBulk(w http.ResponseWriter, r *http.Request) {
 	case "disable":
 		poolErr = pool.UpdateKeysStatus(hashes, "disabled")
 		log.Printf("API: bulk disabled %d %s keys", len(hashes), provider)
+	case "reset_cooldown":
+		poolErr = pool.ResetKeysCooldown(hashes)
+		log.Printf("API: reset cooldown for %d %s keys", len(hashes), provider)
 	default:
 		writeAPIError(w, http.StatusBadRequest, "unknown action")
 		return

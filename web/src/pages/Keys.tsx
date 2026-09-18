@@ -42,6 +42,16 @@ export default function Keys() {
     refetchInterval: 5_000,
   })
 
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['keys', provider] })
+    queryClient.invalidateQueries({ queryKey: ['stats', provider] })
+  }
+
+  const resetCooldownMutation = useMutation({
+    mutationFn: (hash: string) => api.bulkKeys(provider, [hash], 'reset_cooldown'),
+    onSuccess: invalidate,
+  })
+
   // Локальный full-text-поиск по masked_key.
   const filtered = useMemo(() => {
     if (!search.trim()) return keys
@@ -174,6 +184,28 @@ export default function Keys() {
         },
       },
       {
+        id: 'actions',
+        header: 'Действия',
+        enableSorting: false,
+        cell: ({ row }) => {
+          const key = row.original
+          if (!key.cooldown_left) return null
+          return (
+            <button
+              onClick={() => {
+                if (confirm(`Сбросить временную блокировку для ключа ${key.masked_key}?`)) {
+                  resetCooldownMutation.mutate(key.key_hash)
+                }
+              }}
+              disabled={resetCooldownMutation.isPending}
+              className="whitespace-nowrap rounded bg-amber-600 px-2 py-1 text-xs font-semibold text-white transition hover:bg-amber-500 disabled:opacity-50"
+            >
+              Сбросить
+            </button>
+          )
+        },
+      },
+      {
         accessorKey: 'last_used_at',
         header: 'Last used',
         cell: (info) => (
@@ -183,7 +215,7 @@ export default function Keys() {
         ),
       },
     ],
-    [selected, filtered],
+    [selected, filtered, resetCooldownMutation],
   )
 
   const table = useReactTable({
@@ -198,11 +230,6 @@ export default function Keys() {
   })
 
   // Мутации
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['keys', provider] })
-    queryClient.invalidateQueries({ queryKey: ['stats', provider] })
-  }
-
   const bulkMutation = useMutation({
     mutationFn: (vars: { action: 'enable' | 'disable' | 'delete' }) =>
       api.bulkKeys(provider, [...selected], vars.action),

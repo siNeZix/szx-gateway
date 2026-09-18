@@ -127,7 +127,7 @@ export const api = {
   bulkKeys: (
     provider: Provider,
     hashes: string[],
-    action: 'enable' | 'disable' | 'delete',
+    action: 'enable' | 'disable' | 'delete' | 'reset_cooldown',
   ) =>
     postJSON<{ action: string; affected: number }>('/api/v2/keys/bulk', {
       provider,

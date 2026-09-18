@@ -1251,6 +1251,37 @@ func (s *Store) UpdateKeysStatus(hashes []string, provider, status string) error
 	return tx.Commit()
 }
 
+// ResetKeysCooldown clears temporary global cooldowns without re-enabling permanent blocks.
+func (s *Store) ResetKeysCooldown(hashes []string, provider string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		UPDATE ` + "`keys`" + `
+		SET cooldown_until = ?,
+			status = CASE WHEN status = 'rate_limited' THEN 'unchecked' ELSE status END
+		WHERE key_hash = ? AND provider = ?
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	zeroTime := time.Unix(0, 0)
+	for _, hash := range hashes {
+		if _, err := stmt.Exec(zeroTime, hash, provider); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpdateKey(k *DBKey, provider string) error {
 	_, err := s.db.Exec(`
 		UPDATE `+"`keys`"+` SET

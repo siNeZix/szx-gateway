@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"szx-gateway/internal/config"
 	"szx-gateway/internal/keys"
@@ -71,6 +72,11 @@ func doJSON(t *testing.T, srv *httptest.Server, method, path string, body any) a
 // newTestServer поднимает WebServer с in-memory-like SQLite и реальными KeyPool.
 // Конфиг без auth, чтобы тесты не возились с Basic Auth.
 func newTestServer(t *testing.T) *httptest.Server {
+	srv, _ := newTestServerWithStore(t)
+	return srv
+}
+
+func newTestServerWithStore(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "api_test.db")
@@ -95,7 +101,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	ws.Start(mux)
 
-	return httptest.NewServer(mux)
+	return httptest.NewServer(mux), s
 }
 
 // TestAPI_Contract проверяет единый конверт {data}/{error} на наборе эндпоинтов.
@@ -249,6 +255,58 @@ func TestAPI_KeysLifecycle(t *testing.T) {
 	}
 	if len(list) != 0 {
 		t.Fatalf("expected 0 keys after delete, got %d", len(list))
+	}
+}
+
+func TestAPI_KeysBulkResetCooldown(t *testing.T) {
+	srv, s := newTestServerWithStore(t)
+	defer srv.Close()
+
+	key := "sk-or-v1-cooldown-test-key"
+	env := doJSON(t, srv, "POST", "/api/v2/keys", map[string]any{
+		"provider": "openrouter",
+		"keys":     []string{key},
+	})
+	if env.Error != "" {
+		t.Fatalf("add key: %s", env.Error)
+	}
+	hash := store.HashKey(key)
+	dbKeys, err := s.GetKeys("openrouter")
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if len(dbKeys) != 1 {
+		t.Fatalf("key count = %d, want 1", len(dbKeys))
+	}
+	dbKeys[0].Status = "rate_limited"
+	dbKeys[0].CooldownUntil = time.Now().Add(time.Hour)
+	if err := s.UpdateKey(dbKeys[0], "openrouter"); err != nil {
+		t.Fatalf("set cooldown: %v", err)
+	}
+
+	env = doJSON(t, srv, "POST", "/api/v2/keys/bulk", map[string]any{
+		"provider": "openrouter",
+		"hashes":   []string{hash},
+		"action":   "reset_cooldown",
+	})
+	var bulk struct {
+		Action   string `json:"action"`
+		Affected int    `json:"affected"`
+	}
+	if err := json.Unmarshal(env.Data, &bulk); err != nil {
+		t.Fatalf("unmarshal bulk response: %v", err)
+	}
+	if bulk.Action != "reset_cooldown" || bulk.Affected != 1 {
+		t.Fatalf("bulk response = %+v, want reset_cooldown/1", bulk)
+	}
+
+	env = doJSON(t, srv, "GET", "/api/v2/keys?provider=openrouter", nil)
+	var list []map[string]any
+	if err := json.Unmarshal(env.Data, &list); err != nil {
+		t.Fatalf("unmarshal keys list: %v", err)
+	}
+	if len(list) != 1 || list[0]["cooldown_left"] != "" || list[0]["cooldown_until"] != "" || list[0]["status"] != "unchecked" {
+		t.Fatalf("cooldown not cleared in API response: %v", list)
 	}
 }
 

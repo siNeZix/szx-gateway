@@ -180,6 +180,79 @@ func TestStore_BulkOperations(t *testing.T) {
 	}
 }
 
+func TestStore_ResetKeysCooldown(t *testing.T) {
+	s, err := store.New(filepath.Join(t.TempDir(), "test_reset_cooldown.db"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.AddKeys([]string{"key-rate-limited", "key-disabled"}, "openrouter"); err != nil {
+		t.Fatalf("add openrouter keys: %v", err)
+	}
+	if _, err := s.AddKeys([]string{"key-other-provider"}, "aihubmix"); err != nil {
+		t.Fatalf("add aihubmix key: %v", err)
+	}
+
+	rateLimitedHash := store.HashKey("key-rate-limited")
+	disabledHash := store.HashKey("key-disabled")
+	otherHash := store.HashKey("key-other-provider")
+	future := time.Now().Add(time.Hour)
+	for _, key := range []*store.DBKey{
+		{KeyHash: rateLimitedHash, Status: "rate_limited", CooldownUntil: future},
+		{KeyHash: disabledHash, Status: "disabled", CooldownUntil: future},
+	} {
+		keys, err := s.GetKeys("openrouter")
+		if err != nil {
+			t.Fatalf("get openrouter keys: %v", err)
+		}
+		for _, existing := range keys {
+			if existing.KeyHash == key.KeyHash {
+				existing.Status = key.Status
+				existing.CooldownUntil = key.CooldownUntil
+				if err := s.UpdateKey(existing, "openrouter"); err != nil {
+					t.Fatalf("prepare key state: %v", err)
+				}
+			}
+		}
+	}
+	otherKeys, err := s.GetKeys("aihubmix")
+	if err != nil {
+		t.Fatalf("get aihubmix keys: %v", err)
+	}
+	otherKeys[0].CooldownUntil = future
+	if err := s.UpdateKey(otherKeys[0], "aihubmix"); err != nil {
+		t.Fatalf("prepare other provider key: %v", err)
+	}
+
+	if err := s.ResetKeysCooldown([]string{rateLimitedHash, disabledHash, otherHash}, "openrouter"); err != nil {
+		t.Fatalf("ResetKeysCooldown: %v", err)
+	}
+
+	keys, err := s.GetKeys("openrouter")
+	if err != nil {
+		t.Fatalf("get reset keys: %v", err)
+	}
+	for _, key := range keys {
+		if key.CooldownUntil.Unix() > 0 {
+			t.Errorf("key %s cooldown still active: %v", key.KeyHash, key.CooldownUntil)
+		}
+		if key.KeyHash == rateLimitedHash && key.Status != "unchecked" {
+			t.Errorf("rate limited status = %q, want unchecked", key.Status)
+		}
+		if key.KeyHash == disabledHash && key.Status != "disabled" {
+			t.Errorf("disabled status = %q, want disabled", key.Status)
+		}
+	}
+	otherKeys, err = s.GetKeys("aihubmix")
+	if err != nil {
+		t.Fatalf("get other provider key: %v", err)
+	}
+	if !otherKeys[0].CooldownUntil.Equal(future) {
+		t.Errorf("other provider cooldown changed: %v", otherKeys[0].CooldownUntil)
+	}
+}
+
 func TestStore_RateLimitsAndRequestsLog(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_logging.db")
