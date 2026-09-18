@@ -41,6 +41,15 @@ export default function Keys() {
     queryFn: () => api.keys(provider, statusFilter === 'all' ? '' : statusFilter),
     refetchInterval: 5_000,
   })
+  const { data: allKeys = [] } = useQuery({
+    queryKey: ['keys', provider, 'all'],
+    queryFn: () => api.keys(provider),
+    refetchInterval: 5_000,
+  })
+
+  const averageCreditUsed = allKeys.length > 0
+    ? allKeys.reduce((sum, key) => sum + key.credit_used, 0) / allKeys.length
+    : 0
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['keys', provider] })
@@ -139,13 +148,12 @@ export default function Keys() {
       },
       ...(provider === '1minai' ? [{
         id: 'credits',
-        header: 'Кредиты',
-        accessorFn: (k: KeyUsageStats) => k.credit_left,
+        header: 'Кредиты (потрачено / среднее)',
+        accessorFn: (k: KeyUsageStats) => k.credit_used,
         cell: (info: { row: { original: KeyUsageStats } }) => {
           const k = info.row.original
-          if (k.credit_limit <= 0) return <span className="text-slate-600">Нет данных</span>
-          const low = k.credit_left <= Math.max(1, k.credit_limit * 0.1)
-          return <span className={`tabular-nums ${low ? 'text-rose-400' : 'text-emerald-400'}`}>{k.credit_left}/{k.credit_limit}</span>
+          if (averageCreditUsed <= 0) return <span className="text-slate-600">Нет данных</span>
+          return <span className="tabular-nums text-slate-300">{k.credit_used}/{averageCreditUsed.toFixed(1)}</span>
         },
       }] : []),
       {
@@ -215,7 +223,7 @@ export default function Keys() {
         ),
       },
     ],
-    [selected, filtered, resetCooldownMutation],
+    [selected, filtered, resetCooldownMutation, provider, averageCreditUsed],
   )
 
   const table = useReactTable({
