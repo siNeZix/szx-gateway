@@ -131,6 +131,17 @@ type oneMinEmulatedToolCall struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+type oneMinAIRecord struct {
+	Status   string `json:"status"`
+	TeamUser struct {
+		CreditLimit int64 `json:"creditLimit"`
+		UsedCredit  int64 `json:"usedCredit"`
+	} `json:"teamUser"`
+	Detail struct {
+		Result json.RawMessage `json:"resultObject"`
+	} `json:"aiRecordDetail"`
+}
+
 type oneMinAssetInput struct {
 	DataURL  string
 	Filename string
@@ -671,26 +682,25 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 		return
 	}
 	var record struct {
-		AIRecord struct {
-			Status   string `json:"status"`
-			TeamUser struct {
-				CreditLimit int64 `json:"creditLimit"`
-				UsedCredit  int64 `json:"usedCredit"`
-			} `json:"teamUser"`
-			Detail struct {
-				Result []string `json:"resultObject"`
-			} `json:"aiRecordDetail"`
-		} `json:"aiRecord"`
+		AIRecord oneMinAIRecord `json:"aiRecord"`
 	}
 	if err := json.Unmarshal(body, &record); err != nil || record.AIRecord.Status != "SUCCESS" {
 		key.RollbackUsage()
+		if oneMinAICreditExhausted(record.AIRecord.Detail.Result) {
+			key.SetStatus("credit_exhausted")
+			h.pool.SyncKeyToDB(key)
+			h.log(key, model, http.StatusPaymentRequired, "1min.AI account credits exhausted", start, stream)
+			writeOpenAIError(w, http.StatusPaymentRequired, "1min.AI account credits are exhausted", "", "insufficient_credits")
+			return
+		}
 		key.SetCooldown(30*time.Second, "")
 		h.pool.SyncKeyToDB(key)
 		h.log(key, model, http.StatusBadGateway, string(body), start, false)
 		writeProxyError(w, http.StatusBadGateway, "1min.AI did not return a successful chat result")
 		return
 	}
-	if len(record.AIRecord.Detail.Result) == 0 {
+	var results []string
+	if err := json.Unmarshal(record.AIRecord.Detail.Result, &results); err != nil || len(results) == 0 {
 		key.RollbackUsage()
 		key.SetCooldown(30*time.Second, "")
 		h.pool.SyncKeyToDB(key)
@@ -699,7 +709,7 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 		return
 	}
 	h.updateCredits(key, record.AIRecord.TeamUser.CreditLimit, record.AIRecord.TeamUser.UsedCredit)
-	content := strings.Join(record.AIRecord.Detail.Result, "\n")
+	content := strings.Join(results, "\n")
 	message := map[string]any{"role": "assistant", "content": content}
 	finishReason := "stop"
 	if emulatedTools {
@@ -724,6 +734,13 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 	h.log(key, model, http.StatusOK, "", start, false)
+}
+
+func oneMinAICreditExhausted(raw json.RawMessage) bool {
+	var failure struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(raw, &failure) == nil && failure.Code == "INSUFFICIENT_CREDITS"
 }
 
 func oneMinToolCallRequired(toolChoice string, hasToolResult bool) bool {

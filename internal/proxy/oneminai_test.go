@@ -334,3 +334,12 @@ func TestOneMinToolCallRequired(t *testing.T) {
 		}
 	}
 }
+
+func TestOneMinAICreditExhausted(t *testing.T) {
+	if !oneMinAICreditExhausted(json.RawMessage(`{"code":"INSUFFICIENT_CREDITS","message":"no credits"}`)) {
+		t.Fatal("insufficient credits was not recognized")
+	}
+	if oneMinAICreditExhausted(json.RawMessage(`{"code":"UNKNOWN_ERROR"}`)) {
+		t.Fatal("unknown error was treated as insufficient credits")
+	}
+}
