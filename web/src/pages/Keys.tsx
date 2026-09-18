@@ -24,6 +24,10 @@ function formatLastUsed(value: string) {
   return date.toLocaleString()
 }
 
+function formatCredits(value: number) {
+  return `${Math.round(value / 1_000)}к`
+}
+
 export default function Keys() {
   const { provider } = useProvider()
   const queryClient = useQueryClient()
@@ -153,7 +157,8 @@ export default function Keys() {
         cell: (info: { row: { original: KeyUsageStats } }) => {
           const k = info.row.original
           if (averageCreditUsed <= 0) return <span className="text-slate-600">Нет данных</span>
-          return <span className="tabular-nums text-slate-300">{k.credit_used}/{averageCreditUsed.toFixed(1)}</span>
+          const percentage = (k.credit_used / averageCreditUsed) * 100
+          return <span className="tabular-nums text-slate-300">{formatCredits(k.credit_used)}/{formatCredits(averageCreditUsed)} ({percentage.toFixed(0)}%)</span>
         },
       }] : []),
       {
