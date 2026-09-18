@@ -687,9 +687,10 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	if err := json.Unmarshal(body, &record); err != nil || record.AIRecord.Status != "SUCCESS" {
 		key.RollbackUsage()
 		if oneMinAICreditExhausted(record.AIRecord.Detail.Result) {
-			key.SetStatus("credit_exhausted")
+			// 1min.AI may reject an expensive request while the key remains usable for others.
+			key.SetCooldown(0, "active")
 			h.pool.SyncKeyToDB(key)
-			h.log(key, model, http.StatusPaymentRequired, "1min.AI account credits exhausted", start, stream)
+			h.log(key, model, http.StatusPaymentRequired, "1min.AI account credits unavailable", start, stream)
 			writeOpenAIError(w, http.StatusPaymentRequired, "1min.AI account credits are exhausted", "", "insufficient_credits")
 			return
 		}

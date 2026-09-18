@@ -83,3 +83,27 @@ func TestResetExpiredDailyUsage(t *testing.T) {
 		}
 	}
 }
+
+func TestOneMinPoolReactivatesStaleCreditExhaustedKey(t *testing.T) {
+	s, err := store.New(filepath.Join(t.TempDir(), "test_1min.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	pool, err := NewKeyPool(s, "1minai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.AddKeys([]string{"1min-test-key"}); err != nil {
+		t.Fatal(err)
+	}
+	pool.keys[0].SetStatus("credit_exhausted")
+	pool.SyncKeyToDB(pool.keys[0])
+	if err := pool.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if pool.keys[0].Status != "unchecked" {
+		t.Fatalf("status = %q, want unchecked", pool.keys[0].Status)
+	}
+}

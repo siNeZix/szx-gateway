@@ -53,6 +53,14 @@ func (kp *KeyPool) Load() error {
 			continue
 		}
 
+		if kp.provider == "1minai" && dbK.Status == "credit_exhausted" {
+			// 1min.AI has no balance endpoint; a stored credit state may be stale after top-up.
+			dbK.Status = "unchecked"
+			if err := kp.store.UpdateKey(dbK, kp.provider); err != nil {
+				return fmt.Errorf("reactivate 1min.AI key: %w", err)
+			}
+		}
+
 		var ks *KeyState
 		if existing, ok := kp.keysMap[dbK.KeyHash]; ok {
 			// Preserve in-memory counters/sliding windows but update DB parameters
