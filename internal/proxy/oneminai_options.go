@@ -143,6 +143,14 @@ func oneMinRandomID() (string, error) {
 	return hex.EncodeToString(value), nil
 }
 
+func oneMinResponseID(prefix string) (string, error) {
+	id, err := oneMinRandomID()
+	if err != nil {
+		return "", err
+	}
+	return prefix + id, nil
+}
+
 func (h *OneMinAIHandler) lookupConversation(r *http.Request, id string) (store.OneMinAIConversation, error) {
 	if id == "" {
 		return store.OneMinAIConversation{}, nil

@@ -163,6 +163,7 @@ type oneMinNormalizedRequest struct {
 	Tools          []oneMinToolDefinition
 	ToolChoice     string
 	HasToolResult  bool
+	ToolCallIDs    map[string]bool
 	Metadata       map[string]any
 }
 
@@ -297,7 +298,7 @@ func (h *OneMinAIHandler) chat(w http.ResponseWriter, r *http.Request) {
 		if in.Stream && !normalized.EmulatedTools {
 			h.stream(w, resp, key, in.Model, start)
 		} else {
-			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools, normalized.ToolChoice, normalized.HasToolResult, in.Stream)
+			h.normal(w, resp, key, in.Model, start, normalized.EmulatedTools, normalized.Tools, normalized.ToolChoice, normalized.HasToolResult, normalized.ToolCallIDs, in.Stream)
 		}
 		if conversation.ID != "" {
 			_ = h.store.TouchOneMinAIConversation(conversation.ID, time.Now().UTC())
@@ -343,10 +344,10 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 		return out, fmt.Errorf("request: structured output, reasoning and audio/video are not supported by the 1min.AI OpenAI adapter")
 	}
 	parts := make([]string, 0, len(in.Messages))
-	toolCallIDs := map[string]bool{}
+	toolCalls := map[string]*oneMinToolCallState{}
 	for i, message := range in.Messages {
 		if out.EmulatedTools {
-			if err := appendOneMinEmulatedToolMessage(&parts, message, i, out.Tools, toolCallIDs, &out.HasToolResult); err != nil {
+			if err := appendOneMinEmulatedToolMessage(&parts, message, i, out.Tools, toolCalls, &out.HasToolResult); err != nil {
 				return out, err
 			}
 			if hasToolCalls(message.ToolCalls) || message.ToolCallID != "" {
@@ -375,6 +376,10 @@ func normalizeOneMinRequest(in oneMinOpenAIRequest) (oneMinNormalizedRequest, er
 		}
 		out.Images, out.Files = images, files
 		parts = append(parts, strings.ToUpper(message.Role)+": "+text)
+	}
+	out.ToolCallIDs = make(map[string]bool, len(toolCalls))
+	for id := range toolCalls {
+		out.ToolCallIDs[id] = true
 	}
 	if out.EmulatedTools {
 		// Keep the protocol after untrusted conversation history so it remains the last instruction.
@@ -470,7 +475,11 @@ func oneMinToolName(name string) bool {
 	return true
 }
 
-func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, index int, tools []oneMinToolDefinition, toolCallIDs map[string]bool, hasToolResult *bool) error {
+type oneMinToolCallState struct {
+	Resolved bool
+}
+
+func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, index int, tools []oneMinToolDefinition, toolCalls map[string]*oneMinToolCallState, hasToolResult *bool) error {
 	if hasJSONValue(message.FunctionCall) || hasJSONValue(message.Reasoning) || hasJSONValue(message.Refusal) {
 		return fmt.Errorf("messages[%d]: legacy function calls, reasoning and refusal are not supported", index)
 	}
@@ -483,10 +492,10 @@ func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, i
 			return fmt.Errorf("messages[%d].tool_calls: %w", index, err)
 		}
 		for _, call := range calls {
-			if toolCallIDs[call.ID] {
+			if toolCalls[call.ID] != nil {
 				return fmt.Errorf("messages[%d].tool_calls: duplicate tool call ID %q", index, call.ID)
 			}
-			toolCallIDs[call.ID] = true
+			toolCalls[call.ID] = &oneMinToolCallState{}
 			*parts = append(*parts, "ASSISTANT TOOL CALL "+call.ID+" "+call.Name+": "+string(call.Arguments))
 		}
 		return nil
@@ -495,14 +504,19 @@ func appendOneMinEmulatedToolMessage(parts *[]string, message oneMinAIMessage, i
 		if message.Role != "tool" {
 			return fmt.Errorf("messages[%d].tool_call_id: only tool messages may provide tool_call_id", index)
 		}
-		if !toolCallIDs[message.ToolCallID] {
+		call := toolCalls[message.ToolCallID]
+		if call == nil {
 			return fmt.Errorf("messages[%d].tool_call_id: does not match an earlier assistant tool call", index)
+		}
+		if call.Resolved {
+			return fmt.Errorf("messages[%d].tool_call_id: duplicate tool result for %q", index, message.ToolCallID)
 		}
 		text, err := oneMinTextContent(message.Content, index)
 		if err != nil {
 			return err
 		}
 		*parts = append(*parts, "TOOL RESULT "+message.ToolCallID+": "+text)
+		call.Resolved = true
 		*hasToolResult = true
 		return nil
 	}
@@ -670,7 +684,7 @@ func oneMinMessageContent(content any, messageIndex int, allowAttachments bool) 
 	}
 }
 
-func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition, toolChoice string, hasToolResult, stream bool) {
+func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time, emulatedTools bool, tools []oneMinToolDefinition, toolChoice string, hasToolResult bool, usedToolCallIDs map[string]bool, stream bool) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -714,7 +728,13 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 	message := map[string]any{"role": "assistant", "content": content}
 	finishReason := "stop"
 	if emulatedTools {
-		if calls, ok := oneMinEmulatedToolCalls(content, tools); ok {
+		calls, ok, err := oneMinEmulatedToolCalls(content, tools, usedToolCallIDs)
+		if err != nil {
+			h.log(key, model, http.StatusBadGateway, "failed to generate emulated tool call ID", start, stream)
+			writeProxyError(w, http.StatusBadGateway, "Failed to generate tool call response")
+			return
+		}
+		if ok {
 			message = map[string]any{"role": "assistant", "content": nil, "tool_calls": calls}
 			finishReason = "tool_calls"
 		} else if finalContent, ok := oneMinEmulatedContent(content); ok {
@@ -726,12 +746,18 @@ func (h *OneMinAIHandler) normal(w http.ResponseWriter, resp *http.Response, key
 			return
 		}
 	}
+	completionID, err := oneMinResponseID("chatcmpl_1min_")
+	if err != nil {
+		h.log(key, model, http.StatusBadGateway, "failed to generate completion ID", start, stream)
+		writeProxyError(w, http.StatusBadGateway, "Failed to generate completion response")
+		return
+	}
 	if stream {
-		h.emulatedStream(w, model, message, finishReason)
+		h.emulatedStream(w, completionID, model, message, finishReason)
 		h.log(key, model, http.StatusOK, "", start, true)
 		return
 	}
-	out := map[string]any{"id": "chatcmpl-1minai", "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}}}
+	out := map[string]any{"id": completionID, "object": "chat.completion", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}}}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 	h.log(key, model, http.StatusOK, "", start, false)
@@ -751,7 +777,7 @@ func oneMinToolCallRequired(toolChoice string, hasToolResult bool) bool {
 	return toolChoice == "required" || strings.HasPrefix(toolChoice, "function ") || !hasToolResult
 }
 
-func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, model string, message map[string]any, finishReason string) {
+func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, completionID, model string, message map[string]any, finishReason string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProxyError(w, http.StatusInternalServerError, "Streaming not supported by gateway")
@@ -759,52 +785,70 @@ func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, model string, me
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	writeOneMinStreamChunk(w, flusher, model, map[string]any{"role": "assistant"}, nil)
+	writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{"role": "assistant"}, nil)
 	if calls, ok := message["tool_calls"].([]map[string]any); ok {
 		for index, call := range calls {
 			function := call["function"].(map[string]string)
-			writeOneMinStreamChunk(w, flusher, model, map[string]any{"tool_calls": []any{map[string]any{"index": index, "id": call["id"], "type": "function", "function": function}}}, nil)
+			writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{"tool_calls": []any{map[string]any{"index": index, "id": call["id"], "type": "function", "function": function}}}, nil)
 		}
 	} else if content, ok := message["content"].(string); ok && content != "" {
-		writeOneMinStreamChunk(w, flusher, model, map[string]any{"content": content}, nil)
+		writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{"content": content}, nil)
 	}
-	writeOneMinStreamChunk(w, flusher, model, map[string]any{}, &finishReason)
+	writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{}, &finishReason)
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
 
-func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition) ([]map[string]any, bool) {
+func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition, usedIDs map[string]bool) ([]map[string]any, bool, error) {
 	responses := oneMinEmulatedJSONResponses(content, "tool_calls")
 	if len(responses) != 1 {
-		return nil, false
+		return nil, false, nil
 	}
 	var response struct {
 		ToolCalls []json.RawMessage `json:"tool_calls"`
 	}
 	if json.Unmarshal(responses[0], &response) != nil || len(response.ToolCalls) == 0 || len(response.ToolCalls) > 32 {
-		return nil, false
+		return nil, false, nil
 	}
 	allowed := make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		allowed[tool.Function.Name] = true
 	}
 	calls := make([]map[string]any, 0, len(response.ToolCalls))
-	for i, rawCall := range response.ToolCalls {
+	for _, rawCall := range response.ToolCalls {
 		name, rawArguments, ok := parseOneMinEmulatedToolCall(rawCall)
 		if !ok || !allowed[name] {
-			return nil, false
+			return nil, false, nil
 		}
 		var arguments any
 		if json.Unmarshal(rawArguments, &arguments) != nil {
-			return nil, false
+			return nil, false, nil
 		}
 		encoded, err := json.Marshal(arguments)
 		if err != nil {
-			return nil, false
+			return nil, false, nil
 		}
-		calls = append(calls, map[string]any{"id": fmt.Sprintf("call_1min_%d", i+1), "type": "function", "function": map[string]string{"name": name, "arguments": string(encoded)}})
+		id, err := oneMinUniqueResponseID("call_1min_", usedIDs)
+		if err != nil {
+			return nil, false, err
+		}
+		calls = append(calls, map[string]any{"id": id, "type": "function", "function": map[string]string{"name": name, "arguments": string(encoded)}})
 	}
-	return calls, true
+	return calls, true, nil
+}
+
+func oneMinUniqueResponseID(prefix string, usedIDs map[string]bool) (string, error) {
+	for range 8 {
+		id, err := oneMinResponseID(prefix)
+		if err != nil {
+			return "", err
+		}
+		if !usedIDs[id] {
+			usedIDs[id] = true
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("could not allocate unique response ID")
 }
 
 func oneMinEmulatedContent(content string) (string, bool) {
@@ -902,6 +946,14 @@ func oneMinJSONObjectEnd(value string) (int, bool) {
 
 func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time) {
 	defer resp.Body.Close()
+	completionID, err := oneMinResponseID("chatcmpl_1min_")
+	if err != nil {
+		key.RollbackUsage()
+		h.pool.SyncKeyToDB(key)
+		h.log(key, model, http.StatusBadGateway, "failed to generate completion ID", start, true)
+		writeProxyError(w, http.StatusBadGateway, "Failed to generate completion response")
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeProxyError(w, http.StatusInternalServerError, "Streaming not supported by gateway")
@@ -915,7 +967,7 @@ func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key
 			return
 		}
 		started = true
-		writeOneMinStreamChunk(w, flusher, model, map[string]any{"role": "assistant"}, nil)
+		writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{"role": "assistant"}, nil)
 	}
 
 	reader := bufio.NewReader(resp.Body)
@@ -939,7 +991,7 @@ func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key
 			}
 			if err := json.Unmarshal([]byte(data), &chunk); err == nil && chunk.Content != "" {
 				startStream()
-				writeOneMinStreamChunk(w, flusher, model, map[string]any{"content": chunk.Content}, nil)
+				writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{"content": chunk.Content}, nil)
 			}
 		case "result":
 			var result struct {
@@ -1007,14 +1059,14 @@ func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key
 	}
 	startStream()
 	finish := "stop"
-	writeOneMinStreamChunk(w, flusher, model, map[string]any{}, &finish)
+	writeOneMinStreamChunk(w, flusher, completionID, model, map[string]any{}, &finish)
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
 	h.log(key, model, http.StatusOK, "", start, true)
 }
 
-func writeOneMinStreamChunk(w http.ResponseWriter, flusher http.Flusher, model string, delta map[string]any, finish *string) {
-	out, _ := json.Marshal(map[string]any{"id": "chatcmpl-1minai", "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
+func writeOneMinStreamChunk(w http.ResponseWriter, flusher http.Flusher, completionID, model string, delta map[string]any, finish *string) {
+	out, _ := json.Marshal(map[string]any{"id": completionID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}})
 	fmt.Fprintf(w, "data: %s\n\n", out)
 	flusher.Flush()
 }

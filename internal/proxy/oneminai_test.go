@@ -129,9 +129,9 @@ func TestOneMinTextContentRejectsArbitraryJSON(t *testing.T) {
 
 func TestWriteOneMinStreamChunk(t *testing.T) {
 	res := httptest.NewRecorder()
-	writeOneMinStreamChunk(res, res, "model", map[string]any{"role": "assistant"}, nil)
+	writeOneMinStreamChunk(res, res, "chatcmpl_test", "model", map[string]any{"role": "assistant"}, nil)
 	finish := "stop"
-	writeOneMinStreamChunk(res, res, "model", map[string]any{}, &finish)
+	writeOneMinStreamChunk(res, res, "chatcmpl_test", "model", map[string]any{}, &finish)
 	body := res.Body.String()
 	if !strings.Contains(body, `"role":"assistant"`) || !strings.Contains(body, `"finish_reason":"stop"`) {
 		t.Fatalf("unexpected chunks: %s", body)
@@ -207,6 +207,20 @@ func TestNormalizeOneMinRequestRejectsUnknownToolResult(t *testing.T) {
 	}
 }
 
+func TestNormalizeOneMinRequestRejectsDuplicateToolResult(t *testing.T) {
+	_, err := normalizeOneMinRequest(oneMinOpenAIRequest{
+		Messages: []oneMinAIMessage{
+			{Role: "assistant", ToolCalls: json.RawMessage(`[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]`)},
+			{Role: "tool", ToolCallID: "call_1", Content: "first"},
+			{Role: "tool", ToolCallID: "call_1", Content: "second"},
+		},
+		Tools: json.RawMessage(`[{"type":"function","function":{"name":"lookup","parameters":{}}}]`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate tool result") {
+		t.Fatalf("expected duplicate tool result error, got %v", err)
+	}
+}
+
 func TestNormalizeOneMinRequestEmulatesToolsAutomatically(t *testing.T) {
 	out, err := normalizeOneMinRequest(oneMinOpenAIRequest{
 		Messages: []oneMinAIMessage{{Role: "user", Content: "Weather?"}},
@@ -261,22 +275,42 @@ func TestOneMinEmulatedToolCalls(t *testing.T) {
 		"Result:\n```\n{\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Moscow\\\"}\"}}]}\n```\nEnd.",
 	}
 	for _, content := range valid {
-		calls, ok := oneMinEmulatedToolCalls(content, tools)
-		if !ok || len(calls) != 1 || calls[0]["id"] != "call_1min_1" {
-			t.Fatalf("unexpected tool calls for %q: %#v, ok=%v", content, calls, ok)
+		calls, ok, err := oneMinEmulatedToolCalls(content, tools, map[string]bool{})
+		if err != nil || !ok || len(calls) != 1 || !strings.HasPrefix(calls[0]["id"].(string), "call_1min_") {
+			t.Fatalf("unexpected tool calls for %q: %#v, ok=%v, err=%v", content, calls, ok, err)
 		}
 	}
-	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"unknown","arguments":{}}]}`, tools); ok {
+	if _, ok, _ := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"unknown","arguments":{}}]}`, tools, map[string]bool{}); ok {
 		t.Fatal("undeclared tool accepted")
 	}
-	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":"not json"}]}`, tools); ok {
+	if _, ok, _ := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":"not json"}]}`, tools, map[string]bool{}); ok {
 		t.Fatal("invalid arguments accepted")
 	}
-	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":{}}]} {"tool_calls":[{"name":"get_weather","arguments":{}}]}`, tools); ok {
+	if _, ok, _ := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":{}}]} {"tool_calls":[{"name":"get_weather","arguments":{}}]}`, tools, map[string]bool{}); ok {
 		t.Fatal("ambiguous tool responses accepted")
 	}
-	if _, ok := oneMinEmulatedToolCalls(`Text with { braces } only`, tools); ok {
+	if _, ok, _ := oneMinEmulatedToolCalls(`Text with { braces } only`, tools, map[string]bool{}); ok {
 		t.Fatal("ordinary text accepted as tool call")
+	}
+}
+
+func TestOneMinEmulatedToolCallsUseUniqueIDs(t *testing.T) {
+	tools := []oneMinToolDefinition{{Type: "function"}}
+	tools[0].Function.Name = "get_weather"
+	content := `{"tool_calls":[{"name":"get_weather","arguments":{}},{"name":"get_weather","arguments":{}}]}`
+	used := map[string]bool{"call_1min_existing": true}
+	first, ok, err := oneMinEmulatedToolCalls(content, tools, used)
+	if err != nil || !ok || len(first) != 2 {
+		t.Fatalf("unexpected first tool calls: %#v, ok=%v, err=%v", first, ok, err)
+	}
+	firstID := first[0]["id"].(string)
+	secondID := first[1]["id"].(string)
+	if firstID == secondID || used["call_1min_existing"] == false {
+		t.Fatalf("tool IDs are not unique: %q %q", firstID, secondID)
+	}
+	second, ok, err := oneMinEmulatedToolCalls(content, tools, used)
+	if err != nil || !ok || second[0]["id"] == firstID || second[1]["id"] == secondID {
+		t.Fatalf("tool IDs were reused: %#v, ok=%v, err=%v", second, ok, err)
 	}
 }
 
@@ -295,7 +329,7 @@ func TestOneMinEmulatedContent(t *testing.T) {
 func TestOneMinEmulatedStream(t *testing.T) {
 	res := httptest.NewRecorder()
 	h := &OneMinAIHandler{}
-	h.emulatedStream(res, "model", map[string]any{
+	h.emulatedStream(res, "chatcmpl_test", "model", map[string]any{
 		"role":    "assistant",
 		"content": nil,
 		"tool_calls": []map[string]any{{
