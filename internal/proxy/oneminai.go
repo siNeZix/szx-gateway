@@ -774,13 +774,14 @@ func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, model string, me
 }
 
 func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition) ([]map[string]any, bool) {
-	var response struct {
-		ToolCalls []struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		} `json:"tool_calls"`
+	responses := oneMinEmulatedJSONResponses(content, "tool_calls")
+	if len(responses) != 1 {
+		return nil, false
 	}
-	if json.Unmarshal([]byte(content), &response) != nil || len(response.ToolCalls) == 0 || len(response.ToolCalls) > 32 {
+	var response struct {
+		ToolCalls []json.RawMessage `json:"tool_calls"`
+	}
+	if json.Unmarshal(responses[0], &response) != nil || len(response.ToolCalls) == 0 || len(response.ToolCalls) > 32 {
 		return nil, false
 	}
 	allowed := make(map[string]bool, len(tools))
@@ -788,19 +789,20 @@ func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition) ([]ma
 		allowed[tool.Function.Name] = true
 	}
 	calls := make([]map[string]any, 0, len(response.ToolCalls))
-	for i, call := range response.ToolCalls {
-		if !allowed[call.Name] || !json.Valid(call.Arguments) {
+	for i, rawCall := range response.ToolCalls {
+		name, rawArguments, ok := parseOneMinEmulatedToolCall(rawCall)
+		if !ok || !allowed[name] {
 			return nil, false
 		}
 		var arguments any
-		if json.Unmarshal(call.Arguments, &arguments) != nil {
+		if json.Unmarshal(rawArguments, &arguments) != nil {
 			return nil, false
 		}
 		encoded, err := json.Marshal(arguments)
 		if err != nil {
 			return nil, false
 		}
-		calls = append(calls, map[string]any{"id": fmt.Sprintf("call_1min_%d", i+1), "type": "function", "function": map[string]string{"name": call.Name, "arguments": string(encoded)}})
+		calls = append(calls, map[string]any{"id": fmt.Sprintf("call_1min_%d", i+1), "type": "function", "function": map[string]string{"name": name, "arguments": string(encoded)}})
 	}
 	return calls, true
 }
@@ -809,10 +811,93 @@ func oneMinEmulatedContent(content string) (string, bool) {
 	var response struct {
 		Content *string `json:"content"`
 	}
-	if json.Unmarshal([]byte(content), &response) != nil || response.Content == nil {
+	responses := oneMinEmulatedJSONResponses(content, "content")
+	if len(responses) != 1 || json.Unmarshal(responses[0], &response) != nil || response.Content == nil {
 		return "", false
 	}
 	return *response.Content, true
+}
+
+func parseOneMinEmulatedToolCall(raw json.RawMessage) (string, json.RawMessage, bool) {
+	var call struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Function  struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(raw, &call) != nil {
+		return "", nil, false
+	}
+	if call.Function.Name != "" {
+		call.Name = call.Function.Name
+		call.Arguments = call.Function.Arguments
+	}
+	if call.Name == "" || len(call.Arguments) == 0 {
+		return "", nil, false
+	}
+	var encoded string
+	if json.Unmarshal(call.Arguments, &encoded) == nil {
+		call.Arguments = json.RawMessage(encoded)
+	}
+	if !json.Valid(call.Arguments) {
+		return "", nil, false
+	}
+	return call.Name, call.Arguments, true
+}
+
+// oneMinEmulatedJSONResponses finds complete JSON objects, including fenced
+// output. Only objects containing the expected protocol field are returned.
+func oneMinEmulatedJSONResponses(content, field string) []json.RawMessage {
+	responses := make([]json.RawMessage, 0, 1)
+	for start := 0; start < len(content); start++ {
+		if content[start] != '{' {
+			continue
+		}
+		end, ok := oneMinJSONObjectEnd(content[start:])
+		if !ok {
+			continue
+		}
+		raw := json.RawMessage(content[start : start+end])
+		var object map[string]json.RawMessage
+		if json.Unmarshal(raw, &object) != nil || object[field] == nil {
+			continue
+		}
+		responses = append(responses, raw)
+		start += end - 1
+	}
+	return responses
+}
+
+func oneMinJSONObjectEnd(value string) (int, bool) {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		if inString {
+			if escaped {
+				escaped = false
+			} else if value[i] == '\\' {
+				escaped = true
+			} else if value[i] == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch value[i] {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (h *OneMinAIHandler) stream(w http.ResponseWriter, resp *http.Response, key *keys.KeyState, model string, start time.Time) {

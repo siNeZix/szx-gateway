@@ -255,19 +255,40 @@ func TestNormalizeOneMinRequestAllowsParallelToolCalls(t *testing.T) {
 func TestOneMinEmulatedToolCalls(t *testing.T) {
 	tools := []oneMinToolDefinition{{Type: "function"}}
 	tools[0].Function.Name = "get_weather"
-	calls, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":{"city":"Moscow"}}]}`, tools)
-	if !ok || len(calls) != 1 || calls[0]["id"] != "call_1min_1" {
-		t.Fatalf("unexpected tool calls: %#v, ok=%v", calls, ok)
+	valid := []string{
+		`{"tool_calls":[{"name":"get_weather","arguments":{"city":"Moscow"}}]}`,
+		"```json\n{\"tool_calls\":[{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Moscow\"}}]}\n```",
+		"Result:\n```\n{\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Moscow\\\"}\"}}]}\n```\nEnd.",
+	}
+	for _, content := range valid {
+		calls, ok := oneMinEmulatedToolCalls(content, tools)
+		if !ok || len(calls) != 1 || calls[0]["id"] != "call_1min_1" {
+			t.Fatalf("unexpected tool calls for %q: %#v, ok=%v", content, calls, ok)
+		}
 	}
 	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"unknown","arguments":{}}]}`, tools); ok {
 		t.Fatal("undeclared tool accepted")
 	}
+	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":"not json"}]}`, tools); ok {
+		t.Fatal("invalid arguments accepted")
+	}
+	if _, ok := oneMinEmulatedToolCalls(`{"tool_calls":[{"name":"get_weather","arguments":{}}]} {"tool_calls":[{"name":"get_weather","arguments":{}}]}`, tools); ok {
+		t.Fatal("ambiguous tool responses accepted")
+	}
+	if _, ok := oneMinEmulatedToolCalls(`Text with { braces } only`, tools); ok {
+		t.Fatal("ordinary text accepted as tool call")
+	}
 }
 
 func TestOneMinEmulatedContent(t *testing.T) {
-	content, ok := oneMinEmulatedContent(`{"content":"Final answer"}`)
-	if !ok || content != "Final answer" {
-		t.Fatalf("unexpected content %q, ok=%v", content, ok)
+	for _, raw := range []string{`{"content":"Final answer"}`, "```json\n{\"content\":\"Final answer\"}\n```"} {
+		content, ok := oneMinEmulatedContent(raw)
+		if !ok || content != "Final answer" {
+			t.Fatalf("unexpected content %q, ok=%v", content, ok)
+		}
+	}
+	if _, ok := oneMinEmulatedContent(`{"content":"first"} {"content":"second"}`); ok {
+		t.Fatal("ambiguous final content accepted")
 	}
 }
 
