@@ -2,10 +2,10 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
-	"sync"
 	"time"
 
 	"szx-gateway/internal/config"
@@ -28,8 +28,6 @@ type WebServer struct {
 	pools        map[string]*keys.KeyPool
 	keyChecks    *keys.CheckService
 	proxies      *proxies.Pool
-	sessions     map[string]time.Time
-	sessionsMu   sync.Mutex
 }
 
 func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager, modelChecker *models.ModelChecker, pools map[string]*keys.KeyPool, keyChecks *keys.CheckService, proxyPool *proxies.Pool) *WebServer {
@@ -41,7 +39,6 @@ func NewWebServer(cfg *config.Config, s *store.Store, rm *models.RankingManager,
 		pools:        pools,
 		keyChecks:    keyChecks,
 		proxies:      proxyPool,
-		sessions:     make(map[string]time.Time),
 	}
 }
 
@@ -76,9 +73,9 @@ func (ws *WebServer) createSession(w http.ResponseWriter) error {
 	}
 	token := base64.RawURLEncoding.EncodeToString(value)
 	expires := time.Now().Add(sessionTTL)
-	ws.sessionsMu.Lock()
-	ws.sessions[token] = expires
-	ws.sessionsMu.Unlock()
+	if err := ws.store.CreateWebSession(hashSessionToken(token), expires); err != nil {
+		return err
+	}
 	ws.setSessionCookie(w, token, expires)
 	return nil
 }
@@ -88,17 +85,10 @@ func (ws *WebServer) refreshSession(r *http.Request, w http.ResponseWriter) bool
 	if err != nil || cookie.Value == "" {
 		return false
 	}
-	expires := time.Now().Add(sessionTTL)
-	ws.sessionsMu.Lock()
-	storedExpiry, ok := ws.sessions[cookie.Value]
-	if ok && storedExpiry.After(time.Now()) {
-		ws.sessions[cookie.Value] = expires
-	} else {
-		delete(ws.sessions, cookie.Value)
-		ok = false
-	}
-	ws.sessionsMu.Unlock()
-	if !ok {
+	now := time.Now()
+	expires := now.Add(sessionTTL)
+	ok, err := ws.store.RefreshWebSession(hashSessionToken(cookie.Value), now, expires)
+	if err != nil || !ok {
 		return false
 	}
 	ws.setSessionCookie(w, cookie.Value, expires)
@@ -107,11 +97,14 @@ func (ws *WebServer) refreshSession(r *http.Request, w http.ResponseWriter) bool
 
 func (ws *WebServer) deleteSession(r *http.Request, w http.ResponseWriter) {
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
-		ws.sessionsMu.Lock()
-		delete(ws.sessions, cookie.Value)
-		ws.sessionsMu.Unlock()
+		_ = ws.store.DeleteWebSession(hashSessionToken(cookie.Value))
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil})
+}
+
+func hashSessionToken(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(hash[:])
 }
 
 func (ws *WebServer) setSessionCookie(w http.ResponseWriter, value string, expires time.Time) {

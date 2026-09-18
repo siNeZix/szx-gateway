@@ -257,6 +257,25 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+func (s *Store) CreateWebSession(tokenHash string, expiresAt time.Time) error {
+	_, err := s.db.Exec(`INSERT INTO web_sessions(token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt.UTC())
+	return err
+}
+
+func (s *Store) RefreshWebSession(tokenHash string, now, expiresAt time.Time) (bool, error) {
+	result, err := s.db.Exec(`UPDATE web_sessions SET expires_at = ? WHERE token_hash = ? AND expires_at > ?`, expiresAt.UTC(), tokenHash, now.UTC())
+	if err != nil {
+		return false, err
+	}
+	updated, err := result.RowsAffected()
+	return updated == 1, err
+}
+
+func (s *Store) DeleteWebSession(tokenHash string) error {
+	_, err := s.db.Exec(`DELETE FROM web_sessions WHERE token_hash = ?`, tokenHash)
+	return err
+}
+
 func (s *Store) GetEnabledModelChecks() ([]ModelCheckConfig, error) {
 	return s.getModelCheckConfigs(`SELECT provider, model, enabled, position FROM model_check_configs WHERE enabled = 1 ORDER BY provider, position, model`)
 }
@@ -536,6 +555,8 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_oneminai_conversations_expiry ON oneminai_conversations(expires_at);`,
 		`CREATE TABLE IF NOT EXISTS oneminai_assets (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, owner_hash TEXT NOT NULL, key_hash TEXT NOT NULL, upstream_id TEXT NOT NULL, kind TEXT NOT NULL, content_type TEXT NOT NULL, filename TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at DATETIME NOT NULL, expires_at DATETIME NOT NULL, UNIQUE(conversation_id, owner_hash, key_hash, sha256));`,
 		`CREATE INDEX IF NOT EXISTS idx_oneminai_assets_expiry ON oneminai_assets(expires_at);`,
+		`CREATE TABLE IF NOT EXISTS web_sessions (token_hash TEXT PRIMARY KEY, expires_at DATETIME NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_web_sessions_expiry ON web_sessions(expires_at);`,
 	}
 
 	for _, q := range queries {

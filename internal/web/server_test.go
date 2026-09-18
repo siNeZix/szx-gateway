@@ -4,13 +4,20 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"szx-gateway/internal/config"
+	"szx-gateway/internal/store"
 )
 
 func TestAuthSessionFlow(t *testing.T) {
-	ws := NewWebServer(&config.Config{WebUsername: "admin", WebPassword: "secret"}, nil, nil, nil, nil, nil, nil)
+	s, err := store.New(filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ws := NewWebServer(&config.Config{WebUsername: "admin", WebPassword: "secret"}, s, nil, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	ws.registerAPIRoutes(mux)
 
@@ -38,6 +45,17 @@ func TestAuthSessionFlow(t *testing.T) {
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("check with session status = %d, want %d", response.Code, http.StatusOK)
+	}
+
+	ws = NewWebServer(&config.Config{WebUsername: "admin", WebPassword: "secret"}, s, nil, nil, nil, nil, nil)
+	mux = http.NewServeMux()
+	ws.registerAPIRoutes(mux)
+	request = httptest.NewRequest(http.MethodGet, "/api/v2/auth/check", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("check after server restart status = %d, want %d", response.Code, http.StatusOK)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v2/auth/logout", nil)

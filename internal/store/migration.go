@@ -37,7 +37,7 @@ func migrateSQLiteToDatabase(sqlitePath, driver, dsn string, maxOpenConns, maxId
 		"keys", "requests", "rate_limits_log", "models_cache", "free_models_cache",
 		"aihubmix_free_models_cache", "google_free_models_cache", "model_usage", "proxies",
 		"proxy_settings", "proxy_logs", "model_check_configs", "model_check_results",
-		"oneminai_conversations", "oneminai_assets",
+		"oneminai_conversations", "oneminai_assets", "web_sessions",
 	} {
 		started := time.Now()
 		copied, err := copyTable(source, destination.db, table)

@@ -35,6 +35,8 @@ func (s *Store) migratePostgres() error {
 		`CREATE TABLE IF NOT EXISTS oneminai_conversations (id VARCHAR(64) PRIMARY KEY, owner_hash VARCHAR(64) NOT NULL, key_hash VARCHAR(64) NOT NULL, upstream_id TEXT NOT NULL, model TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_oneminai_conversations_expiry ON oneminai_conversations (expires_at)`,
 		`CREATE TABLE IF NOT EXISTS oneminai_assets (id VARCHAR(64) PRIMARY KEY, conversation_id VARCHAR(64) NOT NULL, owner_hash VARCHAR(64) NOT NULL, key_hash VARCHAR(64) NOT NULL, upstream_id TEXT NOT NULL, kind VARCHAR(16) NOT NULL, content_type TEXT NOT NULL, filename TEXT NOT NULL, size_bytes BIGINT NOT NULL, sha256 VARCHAR(64) NOT NULL, created_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL, UNIQUE(conversation_id, owner_hash, key_hash, sha256))`,
+		`CREATE TABLE IF NOT EXISTS web_sessions (token_hash TEXT PRIMARY KEY, expires_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_web_sessions_expiry ON web_sessions (expires_at)`,
 	}
 	for _, query := range queries {
 		if _, err := s.db.Exec(query); err != nil {
