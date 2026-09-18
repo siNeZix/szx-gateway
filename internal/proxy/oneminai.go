@@ -573,7 +573,7 @@ func oneMinEmulatedToolsPrompt(tools []oneMinToolDefinition, toolChoice string, 
 			instruction = "Call only the required tool " + strings.TrimPrefix(toolChoice, "function ") + "."
 		}
 	}
-	return "SYSTEM: Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. To answer: {\"content\":\"answer\"}. " + instruction + " Never claim workspace, file, command, network, or other external facts without first calling an appropriate tool. Tools: [" + strings.Join(definitions, ",") + "]"
+	return "SYSTEM: Reply with exactly one JSON object and no Markdown. To call tools: {\"tool_calls\":[{\"name\":\"tool_name\",\"arguments\":{...}}]}. End tool calls with ]}, never }] on a separate line. To answer: {\"content\":\"answer\"}. " + instruction + " Never claim workspace, file, command, network, or other external facts without first calling an appropriate tool. Tools: [" + strings.Join(definitions, ",") + "]"
 }
 
 func oneMinCompactToolSchema(raw json.RawMessage) string {
@@ -801,6 +801,11 @@ func (h *OneMinAIHandler) emulatedStream(w http.ResponseWriter, completionID, mo
 
 func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition, usedIDs map[string]bool) ([]map[string]any, bool, error) {
 	responses := oneMinEmulatedJSONResponses(content, "tool_calls")
+	if len(responses) == 0 {
+		if repaired, ok := oneMinRepairEmulatedToolCalls(content); ok {
+			responses = []json.RawMessage{repaired}
+		}
+	}
 	if len(responses) != 1 {
 		return nil, false, nil
 	}
@@ -835,6 +840,31 @@ func oneMinEmulatedToolCalls(content string, tools []oneMinToolDefinition, usedI
 		calls = append(calls, map[string]any{"id": id, "type": "function", "function": map[string]string{"name": name, "arguments": string(encoded)}})
 	}
 	return calls, true, nil
+}
+
+// oneMinRepairEmulatedToolCalls accepts only the known model typo where the
+// tool_calls array closes immediately after the outer JSON object.
+func oneMinRepairEmulatedToolCalls(content string) (json.RawMessage, bool) {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```json") && strings.HasSuffix(trimmed, "```") {
+		trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```json"), "```"))
+	}
+	const brokenSuffix = "}\n]"
+	if !strings.HasSuffix(trimmed, brokenSuffix) {
+		return nil, false
+	}
+	lastObject := strings.LastIndex(trimmed, brokenSuffix)
+	if lastObject < 0 {
+		return nil, false
+	}
+	repaired := trimmed[:lastObject] + "]}" + trimmed[lastObject+len(brokenSuffix):]
+	var object struct {
+		ToolCalls json.RawMessage `json:"tool_calls"`
+	}
+	if json.Unmarshal([]byte(repaired), &object) != nil || len(object.ToolCalls) == 0 {
+		return nil, false
+	}
+	return json.RawMessage(repaired), true
 }
 
 func oneMinUniqueResponseID(prefix string, usedIDs map[string]bool) (string, error) {

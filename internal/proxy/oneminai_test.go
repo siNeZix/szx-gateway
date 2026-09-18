@@ -314,6 +314,19 @@ func TestOneMinEmulatedToolCallsUseUniqueIDs(t *testing.T) {
 	}
 }
 
+func TestOneMinEmulatedToolCallsRepairsKnownClosingBracketTypo(t *testing.T) {
+	tools := []oneMinToolDefinition{{Type: "function"}}
+	tools[0].Function.Name = "bash"
+	content := "```json\n{\"tool_calls\":[{\"name\":\"bash\",\"arguments\":{\"command\":\"git status --short\"}}}\n]\n```"
+	calls, ok, err := oneMinEmulatedToolCalls(content, tools, map[string]bool{})
+	if err != nil || !ok || len(calls) != 1 || calls[0]["function"].(map[string]string)["name"] != "bash" {
+		t.Fatalf("known closing bracket typo was not repaired: %#v, ok=%v, err=%v", calls, ok, err)
+	}
+	if _, ok := oneMinRepairEmulatedToolCalls(`{"tool_calls":[{"name":"bash","arguments":{}}}}]`); ok {
+		t.Fatal("ambiguous malformed JSON accepted")
+	}
+}
+
 func TestOneMinEmulatedContent(t *testing.T) {
 	for _, raw := range []string{`{"content":"Final answer"}`, "```json\n{\"content\":\"Final answer\"}\n```"} {
 		content, ok := oneMinEmulatedContent(raw)
